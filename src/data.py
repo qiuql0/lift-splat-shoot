@@ -143,22 +143,24 @@ class NuscData(torch.utils.data.Dataset):
                 - rotate (float): 旋转角度（度）
         """
         # 获取配置参数
-        H, W = self.data_aug_conf['H'], self.data_aug_conf['W']  # 原始图像高度和宽度
-        fH, fW = self.data_aug_conf['final_dim']  # 最终输出图像尺寸 (height, width)
+        H, W = self.data_aug_conf['H'], self.data_aug_conf['W']  # 原始图像高度和宽度(900, 1600)
+        fH, fW = self.data_aug_conf['final_dim']  # 最终输出图像尺寸 (128, 352)
         
         if self.is_train:
             # ========== 训练模式：随机增强 ==========
             
             # 1. 随机缩放：在resize_lim范围内均匀采样缩放比例
-            # resize_lim格式: [min_resize, max_resize]，如[0.193, 0.225]
-            resize = np.random.uniform(*self.data_aug_conf['resize_lim'])
-            resize_dims = (int(W*resize), int(H*resize))  # 缩放后的尺寸
+            # resize_lim格式: [min_resize, max_resize]
+            # 缩放后的宽度 309~360 略大于目标宽度 352
+            # 缩放后的高度 174~203 略大于目标高度 128！！！！！，一定是大于128的   
+            resize = np.random.uniform(*self.data_aug_conf['resize_lim']) # [0.193, 0.225]
+            resize_dims = (int(W*resize), int(H*resize))
             newW, newH = resize_dims
             
             # 2. 随机裁剪：确保裁剪区域包含图像底部的一定比例（保留道路信息）
             # bot_pct_lim格式: [min_bot_pct, max_bot_pct]，如[0.0, 0.22]
             # 从图像底部向上保留(1 - bot_pct)的区域，然后从中裁剪fH x fW的区域
-            crop_h = int((1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim'])) * newH) - fH
+            crop_h = int((1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim'])) * newH) - fH # bot_pct_lim=(0.0, 0.22)
             crop_w = int(np.random.uniform(0, max(0, newW - fW)))  # 水平方向随机偏移
             crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)  # (x_min, y_min, x_max, y_max)
             
@@ -169,7 +171,7 @@ class NuscData(torch.utils.data.Dataset):
             
             # 4. 随机旋转：在rot_lim范围内均匀采样旋转角度
             # rot_lim格式: [min_rot, max_rot]，如[-5.4, 5.4]（度）
-            rotate = np.random.uniform(*self.data_aug_conf['rot_lim'])
+            rotate = np.random.uniform(*self.data_aug_conf['rot_lim']) # rot_lim=(-5.4, 5.4), 旋转角度范围 -5.4~5.4
             
         else:
             # ========== 验证/测试模式：固定增强 ==========
