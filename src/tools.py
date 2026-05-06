@@ -120,26 +120,72 @@ def get_rot(h):
 def img_transform(img, post_rot, post_tran,
                   resize, resize_dims, crop,
                   flip, rotate):
-    # adjust image
+    """
+    对图像进行几何变换，并同步更新后处理变换矩阵。
+    
+    该函数执行以下操作：
+    1. 图像缩放（resize）
+    2. 图像裁剪（crop）
+    3. 水平翻转（flip）
+    4. 旋转（rotate）
+    
+    同时，函数会根据这些变换操作更新后处理变换矩阵（post_rot和post_tran），
+    用于后续将图像坐标映射回原始坐标系。这对于保持3D投影的准确性至关重要。
+    
+    Args:
+        img (PIL.Image): 输入图像
+        post_rot (torch.Tensor): 2x2后处理旋转矩阵（初始为单位矩阵）
+        post_tran (torch.Tensor): 2D后处理平移向量（初始为零向量）
+        resize (float): 缩放比例
+        resize_dims (tuple): 缩放后的图像尺寸 (width, height)
+        crop (tuple): 裁剪区域 (x_min, y_min, x_max, y_max)
+        flip (bool): 是否进行水平翻转
+        rotate (float): 旋转角度（度）
+        
+    Returns:
+        tuple: 包含3个元素的元组
+            - img (PIL.Image): 变换后的图像
+            - post_rot (torch.Tensor): 更新后的2x2旋转矩阵
+            - post_tran (torch.Tensor): 更新后的2D平移向量
+    """
+    # ========== 第一步：图像变换 ==========
+    # 1. 缩放图像到指定尺寸
     img = img.resize(resize_dims)
+    
+    # 2. 裁剪图像到指定区域
     img = img.crop(crop)
+    
+    # 3. 水平翻转（如果启用）
     if flip:
         img = img.transpose(method=Image.FLIP_LEFT_RIGHT)
+    
+    # 4. 旋转图像（围绕中心旋转）
     img = img.rotate(rotate)
 
-    # post-homography transformation
+    # ========== 第二步：更新后处理变换矩阵 ==========
+    # 这些变换用于将变换后的图像坐标映射回原始图像坐标
+    
+    # 1. 缩放变换：旋转矩阵乘以缩放比例
     post_rot *= resize
+    
+    # 2. 裁剪变换：平移向量减去裁剪区域的左上角坐标
     post_tran -= torch.Tensor(crop[:2])
+    
+    # 3. 翻转变换（如果启用）
     if flip:
+        # 水平翻转的变换矩阵：x轴取反，y轴不变
         A = torch.Tensor([[-1, 0], [0, 1]])
-        b = torch.Tensor([crop[2] - crop[0], 0])
-        post_rot = A.matmul(post_rot)
-        post_tran = A.matmul(post_tran) + b
-    A = get_rot(rotate/180*np.pi)
-    b = torch.Tensor([crop[2] - crop[0], crop[3] - crop[1]]) / 2
-    b = A.matmul(-b) + b
-    post_rot = A.matmul(post_rot)
-    post_tran = A.matmul(post_tran) + b
+        b = torch.Tensor([crop[2] - crop[0], 0])  # 裁剪区域宽度
+        post_rot = A.matmul(post_rot)             # 应用翻转旋转
+        post_tran = A.matmul(post_tran) + b       # 应用翻转平移
+    
+    # 4. 旋转变换
+    A = get_rot(rotate / 180 * np.pi)  # 获取旋转角度对应的旋转矩阵
+    # 计算旋转中心偏移：从裁剪区域中心到旋转后的中心
+    b = torch.Tensor([crop[2] - crop[0], crop[3] - crop[1]]) / 2  # 裁剪区域中心
+    b = A.matmul(-b) + b  # 旋转后的中心偏移
+    post_rot = A.matmul(post_rot)  # 应用旋转
+    post_tran = A.matmul(post_tran) + b  # 应用旋转平移
 
     return img, post_rot, post_tran
 
@@ -163,7 +209,9 @@ denormalize_img = torchvision.transforms.Compose((
             torchvision.transforms.ToPILImage(),
         ))
 
-
+'''
+这组数值 [0.485, 0.456, 0.406] 和 [0.229, 0.224, 0.225] 是 ImageNet 数据集的 RGB 通道均值和标准差。
+'''
 normalize_img = torchvision.transforms.Compose((
                 torchvision.transforms.ToTensor(),
                 torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -171,9 +219,23 @@ normalize_img = torchvision.transforms.Compose((
 ))
 
 
+# BEV网格配置示例（参考train.py中的默认参数）
+# xbound=[-50.0, 50.0, 0.5],  # x轴范围[-50m, 50m]，步长0.5m
+# ybound=[-50.0, 50.0, 0.5],  # y轴范围[-50m, 50m]，步长0.5m
+# zbound=[-10.0, 10.0, 20.0],  # z轴范围[-10m, 10m]，步长20m（实际为2层）
+# dbound=[4.0, 45.0, 1.0],    # 深度范围[4m, 45m]，步长1m
+
 def gen_dx_bx(xbound, ybound, zbound):
+    # 步骤1：计算网格步长（每个维度的cell大小）
+    # 从xbound, ybound, zbound中提取第3个元素（步长）
     dx = torch.Tensor([row[2] for row in [xbound, ybound, zbound]])
+    
+    # 步骤2：计算网格偏移（第一个网格中心的坐标）
+    # 计算公式：min + step/2，确保第一个网格的中心位于min位置右侧半个步长处
     bx = torch.Tensor([row[0] + row[2]/2.0 for row in [xbound, ybound, zbound]])
+    
+    # 步骤3：计算网格数量（每个维度的cell数量）
+    # 计算公式：(max - min) / step，使用整数除法
     nx = torch.LongTensor([(row[1] - row[0]) / row[2] for row in [xbound, ybound, zbound]])
 
     return dx, bx, nx

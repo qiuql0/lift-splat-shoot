@@ -18,7 +18,7 @@ from .tools import SimpleLoss, get_batch_iou, get_val_info
 def train(version,
             dataroot='/data/nuscenes',
             nepochs=10000,
-            gpuid=1,
+            gpuid=0,
 
             H=900, W=1600,
             resize_lim=(0.193, 0.225),
@@ -68,8 +68,10 @@ def train(version,
     model.to(device)
 
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    
 
-    loss_fn = SimpleLoss(pos_weight).cuda(gpuid)
+    # loss_fn = SimpleLoss(pos_weight).cuda(gpuid)
+    loss_fn = SimpleLoss(pos_weight)
 
     writer = SummaryWriter(logdir=logdir)
     val_step = 1000 if version == 'mini' else 10000

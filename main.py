@@ -18,3 +18,6 @@ if __name__ == '__main__':
         'eval_model_iou': src.explore.eval_model_iou,
         'viz_model_preds': src.explore.viz_model_preds,
     })
+
+# python main.py train mini/trainval --dataroot=NUSCENES_ROOT --logdir=./runs --gpuid=0
+# tensorboard --logdir=./runs --bind_all
