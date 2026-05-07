@@ -165,6 +165,9 @@ def img_transform(img, post_rot, post_tran,
     # ========== 第二步：更新后处理变换矩阵 ==========
     # 这些变换用于将变换后的图像坐标映射回原始图像坐标
     
+    # post_rot = torch.eye(2)   # 初始化为单位矩阵(2,2)
+    # post_tran = torch.zeros(2) # 初始化为零向量(2,)
+    
     # 1. 缩放变换：旋转矩阵乘以缩放比例
     post_rot *= resize
     

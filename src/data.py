@@ -55,7 +55,7 @@ class NuscData(torch.utils.data.Dataset):
         # 步骤3：计算BEV网格参数
         # gen_dx_bx函数生成：
         # - dx: 网格步长 [x_step, y_step, z_step]
-        # - bx: 网格偏移（中心位置）[x_offset, y_offset, z_offset]， 最小值加上半个偏移量，也就是起点
+        # - bx: 网格偏移（中心位置）[x_offset, y_offset, z_offset]， 最小值加上半个偏移量，也就是第一个网格的中心位置
         # - nx: 网格数量 [x_num, y_num, z_num]
         dx, bx, nx = gen_dx_bx(grid_conf['xbound'], grid_conf['ybound'], grid_conf['zbound'])
         self.dx, self.bx, self.nx = dx.numpy(), bx.numpy(), nx.numpy()
@@ -150,18 +150,19 @@ class NuscData(torch.utils.data.Dataset):
             # ========== 训练模式：随机增强 ==========
             
             # 1. 随机缩放：在resize_lim范围内均匀采样缩放比例
-            # resize_lim格式: [min_resize, max_resize]
+            # resize_lim格式: [min_resize, max_resize] # [0.193, 0.225]
             # 缩放后的宽度 309~360 略大于目标宽度 352
-            # 缩放后的高度 174~203 略大于目标高度 128！！！！！，一定是大于128的   
+            # 缩放后的高度 174~203 略大于目标高度 128！！！！！，这里是大于128的   
             resize = np.random.uniform(*self.data_aug_conf['resize_lim']) # [0.193, 0.225]
             resize_dims = (int(W*resize), int(H*resize))
             newW, newH = resize_dims
             
-            # 2. 随机裁剪：确保裁剪区域包含图像底部的一定比例（保留道路信息）
+            # 2. 随机裁剪：去除图像底部的一定比例，从上方剩余区域中裁剪（保留道路信息）
             # bot_pct_lim格式: [min_bot_pct, max_bot_pct]，如[0.0, 0.22]
-            # 从图像底部向上保留(1 - bot_pct)的区域，然后从中裁剪fH x fW的区域
-            crop_h = int((1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim'])) * newH) - fH # bot_pct_lim=(0.0, 0.22)
-            crop_w = int(np.random.uniform(0, max(0, newW - fW)))  # 水平方向随机偏移
+            # 先去除底部bot_pct比例的区域，然后从上方(1-bot_pct)的区域中裁剪fH x fW
+            # 缩放后最低高度174，即使裁剪笔记0.22，也剩余135高度，大于目标高度128
+            crop_h = int((1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim'])) * newH) - fH # h的起始位置
+            crop_w = int(np.random.uniform(0, max(0, newW - fW)))  # w的起始位置，因为newW(如：209)可能小于fW(352)，所以这里要用max
             crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)  # (x_min, y_min, x_max, y_max)
             
             # 3. 随机水平翻转：根据rand_flip配置决定是否启用
@@ -262,7 +263,7 @@ class NuscData(torch.utils.data.Dataset):
             post_rot[:2, :2] = post_rot2  # 将2D旋转矩阵放入左上角
 
             # 步骤7：归一化图像并收集数据
-            imgs.append(normalize_img(img))  # 图像归一化到[0, 1]或[-1, 1]
+            imgs.append(normalize_img(img))  # 图像归一化到image net规范
             intrins.append(intrin)
             rots.append(rot)
             trans.append(tran)
@@ -345,13 +346,15 @@ class NuscData(torch.utils.data.Dataset):
             # 步骤6：将连续坐标转换为BEV网格的离散坐标
             # 计算公式：(坐标 - 网格偏移 + 步长/2) / 步长
             # 四舍五入后转换为整数索引
+            # 等价于pts - (self.bx[:2] - self.dx[:2]/2.)，这里减self.dx[:2]/2.是因为self.bx[:2]已经加过半个偏移量了
+            # pts - (self.bx[:2] - self.dx[:2]/2.)的含义是距离（-50, -50）的距离，除以self.dx[:2]，表示多少个格子。0.5米算一个格子
             pts = np.round(
                 (pts - self.bx[:2] + self.dx[:2]/2.) / self.dx[:2]
                 ).astype(np.int32)
             
             # 步骤7：交换x和y坐标（因为BEV网格的坐标系与图像坐标系不同）
             # BEV网格中：x对应高度，y对应宽度
-            pts[:, [1, 0]] = pts[:, [0, 1]]
+            pts[:, [1, 0]] = pts[:, [0, 1]] # 相当于以（-50, 50）为原点了
             
             # 步骤8：使用OpenCV填充多边形，生成车辆区域的掩码
             cv2.fillPoly(img, [pts], 1.0)
