@@ -37,7 +37,14 @@ class Up(nn.Module):
         # 双线性上采样层：将特征图尺寸放大scale_factor倍
         # mode='bilinear'：使用双线性插值，保持图像平滑
         # align_corners=True：对齐输入输出的角落像素，保持坐标一致性
-        # 输入要求：4D张量 (B, C, H, W)，最后两维为高度和宽度
+        # mode='bilinear'输入要求：4D张量 (B, C, H, W)，最后两维为高度和宽度
+        
+        # PyTorch 的 nn.Upsample 对不同 mode 有明确的维度限制：
+        # mode	支持维度	对应场景
+        # 'bilinear'	4D (N, C, H, W)	2D 图像上采样
+        # 'trilinear'	5D (N, C, D, H, W)	3D 体数据上采样
+        # 'nearest'	3D/4D/5D	通用最近邻插值
+        # 'bicubic'	4D	2D 双三次插值
         self.up = nn.Upsample(scale_factor=scale_factor, mode='bilinear',
                               align_corners=True)
 
@@ -182,8 +189,10 @@ class CamEncode(nn.Module):
         # 步骤4：生成深度感知的3D特征
         # x[:, self.D:(self.D + self.C)] 取后C通道作为特征，形状为 (B, C, H/16, W/16)
         # unsqueeze(2) 在深度维度扩展，形状变为 (B, C, 1, H/16, W/16)
+        
         # depth.unsqueeze(1) 在通道维度扩展，形状变为 (B, 1, D, H/16, W/16)
         # 逐元素相乘后，每个深度层的特征被对应的深度概率加权
+        
         new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)
         # 输出形状：(B, C, D, H/16, W/16)，即 (B, 通道数, 深度步数, 高度, 宽度)
 
@@ -394,6 +403,7 @@ class LiftSplatShoot(nn.Module):
         self.D, _, _, _ = self.frustum.shape  # D: 深度步数（如41，对应深度范围4m-45m）
         
         # 初始化相机编码器：将2D图像转换为深度感知的3D特征
+        # 为每个像素位置和深度生成一个64维的特征向量
         self.camencode = CamEncode(self.D, self.camC, self.downsample)  # (深度步数, 特征通道数, 下采样因子)
         
         # 初始化BEV编码器：将BEV特征映射到最终输出（如分割掩码）
@@ -453,21 +463,73 @@ class LiftSplatShoot(nn.Module):
         return nn.Parameter(frustum, requires_grad=False)
 
     def get_geometry(self, rots, trans, intrins, post_rots, post_trans):
-        """Determine the (x,y,z) locations (in the ego frame)
-        of the points in the point cloud.
-        Returns B x N x D x H/downsample x W/downsample x 3
+        """
+        计算相机视锥体中每个像素在 ego 坐标系（车辆坐标系）中的 3D 坐标。
+        
+        该方法实现了从图像像素坐标到 3D 世界坐标的完整转换，包含以下步骤：
+        1. 撤销数据增强的后处理变换（post_rots/post_trans）
+        2. 将归一化图像坐标转换为相机坐标系下的 3D 坐标
+        3. 将相机坐标系转换为 ego 坐标系（车辆坐标系）
+        
+        Args:
+            rots (torch.Tensor): 相机外参旋转矩阵，形状为 (B, N, 3, 3)
+                                描述相机相对于车辆坐标系的旋转
+            trans (torch.Tensor): 相机外参平移向量，形状为 (B, N, 3)
+                                 描述相机相对于车辆坐标系的位置
+            intrins (torch.Tensor): 相机内参矩阵，形状为 (B, N, 3, 3)
+                                   包含焦距(fx, fy)、主点(cx, cy)等参数
+            post_rots (torch.Tensor): 图像后处理旋转矩阵，形状为 (B, N, 3, 3)
+                                     数据增强时应用的旋转变换
+            post_trans (torch.Tensor): 图像后处理平移向量，形状为 (B, N, 3)
+                                      数据增强时应用的平移变换
+            
+        Returns:
+            torch.Tensor: 每个像素在 ego 坐标系中的 3D 坐标，形状为 (B, N, D, H', W', 3)
+                          B: 批次大小，N: 相机数量，D: 深度步数
+                          H': 下采样后的图像高度，W': 下采样后的图像宽度
+                          最后一维3表示 (x, y, z) 坐标
+        
+        坐标变换流程（从图像到 ego 坐标系）：
+        
+        1. 初始视锥体坐标（归一化图像平面）
+           self.frustum 预计算了 D 个深度层上每个像素的 (u, v, d) 坐标
+           u, v ∈ [-1, 1]（归一化图像坐标），d ∈ [dbound[0], dbound[1]]（深度值）
+        
+        2. 撤销后处理变换（undo post-transformation）
+           将经过数据增强变换的坐标还原回原始相机坐标系
+           points = inv(post_rots) × (frustum - post_trans)
+        
+        3. 图像坐标 → 相机坐标系（cam_to_ego 第一步）
+           将归一化图像坐标转换为相机坐标系下的 3D 坐标
+           [x_cam, y_cam, z_cam] = [u×d, v×d, d]
+        
+        4. 相机坐标系 → ego 坐标系（cam_to_ego 第二步）
+           使用外参将相机坐标转换为车辆坐标
+           points_ego = rots × inv(intrins) × points_cam + trans
+        
+        关键数学公式：
+        - 图像坐标到相机坐标: x = u * d, y = v * d, z = d
+        - 相机坐标到 ego 坐标: P_ego = R * K^{-1} * P_cam + T
+          其中 R 是旋转矩阵，K 是内参矩阵，T 是平移向量
         """
         B, N, _ = trans.shape
 
-        # undo post-transformation
-        # B x N x D x H x W x 3
+        # 步骤1：撤销数据增强的后处理变换
+        # 将经过 post_rots/post_trans 变换的坐标还原
+        # self.frustum 形状: (D, H', W', 3)，需要广播到 (B, N, D, H', W', 3)
         points = self.frustum - post_trans.view(B, N, 1, 1, 1, 3)
         points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1))
 
-        # cam_to_ego
+        # 步骤2：图像坐标 → 相机坐标系
+        # 将归一化图像坐标 (u, v) 转换为相机坐标系下的 3D 坐标
+        # [x, y, z] = [u*d, v*d, d]，其中 d 是深度值
         points = torch.cat((points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
                             points[:, :, :, :, :, 2:3]
                             ), 5)
+        
+        # 步骤3：相机坐标系 → ego 坐标系
+        # combine = rots × inv(intrins): 组合旋转和内参逆矩阵
+        # points_ego = combine × points_cam + trans
         combine = rots.matmul(torch.inverse(intrins))
         points = combine.view(B, N, 1, 1, 1, 3, 3).matmul(points).squeeze(-1)
         points += trans.view(B, N, 1, 1, 1, 3)
@@ -531,16 +593,93 @@ class LiftSplatShoot(nn.Module):
         return final
 
     def get_voxels(self, x, rots, trans, intrins, post_rots, post_trans):
+        """
+        Lift-Splat 阶段的核心方法，将多视角相机图像转换为 BEV 体素特征。
+        
+        该方法实现了 Lift-Splat-Shoot 中的 "Lift" 和 "Splat" 两个步骤：
+        1. Lift：将 2D 图像特征提升到 3D 空间（增加深度维度）
+        2. Splat：将 3D 特征投影并聚合到 BEV 体素网格上
+        
+        Args:
+            x (torch.Tensor): 输入的多视角图像张量，形状为 (B, N, 3, H, W)
+                             B: 批次大小，N: 相机数量，3: RGB通道，H: 图像高度，W: 图像宽度
+            rots (torch.Tensor): 相机外参旋转矩阵，形状为 (B, N, 3, 3)
+                                描述相机相对于车辆坐标系的旋转
+            trans (torch.Tensor): 相机外参平移向量，形状为 (B, N, 3)
+                                 描述相机相对于车辆坐标系的位置
+            intrins (torch.Tensor): 相机内参矩阵，形状为 (B, N, 3, 3)
+                                   包含焦距、主点等参数
+            post_rots (torch.Tensor): 图像后处理旋转矩阵，形状为 (B, N, 3, 3)
+                                     用于数据增强的旋转变换
+            post_trans (torch.Tensor): 图像后处理平移向量，形状为 (B, N, 3)
+                                      用于数据增强的平移变换
+            
+        Returns:
+            torch.Tensor: BEV 体素特征图，形状为 (B, C, H_bev, W_bev)
+                          C: 特征通道数（包含深度维度展开）
+                          H_bev, W_bev: BEV 网格的高度和宽度
+        
+        执行流程：
+        1. get_geometry: 计算每个像素对应的 3D 空间坐标（X, Y, Z）
+           - 输入：相机参数
+           - 输出：几何特征张量，形状为 (B, N, D, H, W, 3)
+        
+        2. get_cam_feats: 提取相机图像特征并扩展到深度维度
+           - 通过 CamEncode 编码器提取 2D 图像特征
+           - 将特征扩展到 D 个深度层，生成深度感知特征
+           - 输出形状：(B, N, D, H', W', C)
+        
+        3. voxel_pooling: 将 3D 特征投影并聚合到 BEV 网格
+           - 根据几何坐标将特征分配到对应的体素
+           - 使用累积求和技巧聚合同一体素内的特征
+           - 输出形状：(B, C, H_bev, W_bev)
+        """
+        # 步骤1：计算每个像素的 3D 几何位置
         geom = self.get_geometry(rots, trans, intrins, post_rots, post_trans)
+        
+        # 步骤2：提取相机特征并扩展到深度维度（Lift 步骤）
         x = self.get_cam_feats(x)
 
+        # 步骤3：将特征投影并聚合到 BEV 体素网格（Splat 步骤）
         x = self.voxel_pooling(geom, x)
 
         return x
 
     def forward(self, x, rots, trans, intrins, post_rots, post_trans):
+        """
+        Lift-Splat-Shoot 模型的核心前向传播方法，实现从多视角图像到 BEV 特征的完整转换。
+        
+        该方法是整个模型的入口，包含两个关键阶段：
+        1. Lift-Splat：将多视角相机图像提升（Lift）到 3D 空间并投影（Splat）到 BEV 体素网格
+        2. Shoot：通过 BEV 编码器处理体素特征，输出最终预测结果
+        
+        Args:
+            x (torch.Tensor): 输入的多视角图像张量，形状为 (B, N, 3, H, W)
+                             B: 批次大小，N: 相机数量，3: RGB通道，H: 图像高度，W: 图像宽度
+            rots (torch.Tensor): 相机外参旋转矩阵，形状为 (B, N, 3, 3)
+            trans (torch.Tensor): 相机外参平移向量，形状为 (B, N, 3)
+            intrins (torch.Tensor): 相机内参矩阵，形状为 (B, N, 3, 3)
+            post_rots (torch.Tensor): 图像后处理旋转矩阵，形状为 (B, N, 3, 3)
+            post_trans (torch.Tensor): 图像后处理平移向量，形状为 (B, N, 3)
+            
+        Returns:
+            torch.Tensor: BEV 特征图或分割预测结果，形状为 (B, outC, H_bev, W_bev)
+                          outC: 输出通道数（如分割任务中为类别数）
+                          H_bev, W_bev: BEV 特征图的高度和宽度
+        
+        执行流程：
+        1. get_voxels: 将多视角图像转换为 BEV 体素特征
+           - get_geometry: 计算每个像素的 3D 几何位置
+           - get_cam_feats: 提取相机特征并扩展到深度维度
+           - voxel_pooling: 将特征投影并聚合到 BEV 网格
+        2. bevencode: 通过卷积编码器处理 BEV 特征，输出最终预测
+        """
+        # 阶段1：Lift-Splat - 将多视角图像转换为 BEV 体素特征
         x = self.get_voxels(x, rots, trans, intrins, post_rots, post_trans)
+        
+        # 阶段2：Shoot - 通过 BEV 编码器生成最终预测
         x = self.bevencode(x)
+        
         return x
 
 

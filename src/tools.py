@@ -234,7 +234,7 @@ def gen_dx_bx(xbound, ybound, zbound):
     dx = torch.Tensor([row[2] for row in [xbound, ybound, zbound]])
     
     # 步骤2：计算网格偏移（第一个网格中心的坐标）
-    # 计算公式：min + step/2，确保第一个网格的中心位于min位置右侧半个步长处
+    # 计算公式：min + step/2，确保第一个网格的中心位置
     bx = torch.Tensor([row[0] + row[2]/2.0 for row in [xbound, ybound, zbound]])
     
     # 步骤3：计算网格数量（每个维度的cell数量）
@@ -285,11 +285,41 @@ class QuickCumsum(torch.autograd.Function):
 
 
 class SimpleLoss(torch.nn.Module):
+    """
+    简单的二分类交叉熵损失包装类，使用带 logit 的 BCE 损失。
+    
+    该类封装了 PyTorch 的 BCEWithLogitsLoss，主要用于处理类别不平衡问题。
+    通过 pos_weight 参数可以调整正样本的权重，适用于分割任务中前景像素较少的场景。
+    
+    Attributes:
+        loss_fn (torch.nn.BCEWithLogitsLoss): 带权重的二分类交叉熵损失函数
+    """
     def __init__(self, pos_weight):
+        """
+        初始化损失函数。
+        
+        Args:
+            pos_weight (float): 正样本的权重系数。当正样本数量远少于负样本时，
+                               设置大于1的值可以增加正样本的损失权重，缓解类别不平衡。
+                               例如，若前景像素占比为10%，可设置为9.0。
+        """
         super(SimpleLoss, self).__init__()
-        self.loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([pos_weight]))
+        # 使用 BCEWithLogitsLoss，自动处理 sigmoid 和 BCE 损失的融合
+        # pos_weight 参数传入正样本权重，用于平衡类别分布
+        self.loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([pos_weight])) # 放大正样本损失权重
 
     def forward(self, ypred, ytgt):
+        """
+        计算二分类交叉熵损失。
+        
+        Args:
+            ypred (torch.Tensor): 模型输出的 logit 张量（未经过 sigmoid），
+                                 形状通常为 (B, C, H, W)
+            ytgt (torch.Tensor): 目标标签张量，取值为 0 或 1，形状与 ypred 相同
+            
+        Returns:
+            torch.Tensor: 标量损失值
+        """
         loss = self.loss_fn(ypred, ytgt)
         return loss
 

@@ -71,7 +71,7 @@ def train(version,
     
 
     # loss_fn = SimpleLoss(pos_weight).cuda(gpuid)
-    loss_fn = SimpleLoss(pos_weight)
+    loss_fn = SimpleLoss(pos_weight) # 2.13  pos_weight = (负样本数量) / (正样本数量) ≈ (1 - p) / p； 其中 p 是正样本在数据集中的占比
 
     writer = SummaryWriter(logdir=logdir)
     val_step = 1000 if version == 'mini' else 10000

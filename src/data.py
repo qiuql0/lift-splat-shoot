@@ -157,13 +157,15 @@ class NuscData(torch.utils.data.Dataset):
             resize_dims = (int(W*resize), int(H*resize))
             newW, newH = resize_dims
             
-            # 2. 随机裁剪：去除图像底部的一定比例，从上方剩余区域中裁剪（保留道路信息）
+            # 2. 随机裁剪
             # bot_pct_lim格式: [min_bot_pct, max_bot_pct]，如[0.0, 0.22]
-            # 先去除底部bot_pct比例的区域，然后从上方(1-bot_pct)的区域中裁剪fH x fW
-            # 缩放后最低高度174，即使裁剪笔记0.22，也剩余135高度，大于目标高度128
+            # 缩放后最低高度174，即使裁剪比例0.22，也剩余135高度，大于目标高度128
             crop_h = int((1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim'])) * newH) - fH # h的起始位置
-            crop_w = int(np.random.uniform(0, max(0, newW - fW)))  # w的起始位置，因为newW(如：209)可能小于fW(352)，所以这里要用max
+            crop_w = int(np.random.uniform(0, max(0, newW - fW)))  # w的起始位置，因为newW(如209)可能小于fW(352)，所以这里要用max
             crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)  # (x_min, y_min, x_max, y_max)
+            
+            # 举例
+            # 高度：resize后，高度174，随机裁剪后，高度135，减去fH=128，得到17，17就是高度起始位置，（17, 135）就是图片的裁剪高度
             
             # 3. 随机水平翻转：根据rand_flip配置决定是否启用
             flip = False
@@ -446,7 +448,7 @@ class SegmentationData(NuscData):
         # 获取样本记录（包含该样本的元数据信息）
         rec = self.ixes[index]
 
-        # 选择要使用的相机视角（随机选择ncams个相机）
+        # 随机选择ncams个相机，是个列表
         cams = self.choose_cams()
         
         # 获取图像数据和相机参数
