@@ -430,7 +430,7 @@ class LiftSplatShoot(nn.Module):
         # 步骤1：获取图像尺寸参数
         # original feature Height/Width：数据增强后图像的最终尺寸
         ogfH, ogfW = self.data_aug_conf['final_dim']  # 通常为 (128, 352)
-        # feature Height/Width：经过下采样后的特征图尺寸
+        # feature Height/Width：经过下采样后的特征图尺寸 self.downsample:16
         fH, fW = ogfH // self.downsample, ogfW // self.downsample  # 通常为 (8, 22)
         
         # 步骤2：生成深度坐标（z轴）
@@ -517,7 +517,11 @@ class LiftSplatShoot(nn.Module):
         # 步骤1：撤销数据增强的后处理变换
         # 将经过 post_rots/post_trans 变换的坐标还原
         # self.frustum 形状: (D, H', W', 3)，需要广播到 (B, N, D, H', W', 3)
+        # post_trans: (B, N, 3)
         points = self.frustum - post_trans.view(B, N, 1, 1, 1, 3)
+        # in post_rots：(B, N, 3, 3)
+        # int points：(B, N, D, H', W', 3)
+        # out points：(B, N, D, H', W', 3, 1)
         points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1))
 
         # 步骤2：图像坐标 → 相机坐标系

@@ -151,18 +151,36 @@ class NuscData(torch.utils.data.Dataset):
             
             # 1. 随机缩放：在resize_lim范围内均匀采样缩放比例
             # resize_lim格式: [min_resize, max_resize] # [0.193, 0.225]
-            # 缩放后的宽度 309~360 略大于目标宽度 352
-            # 缩放后的高度 174~203 略大于目标高度 128！！！！！，这里是大于128的   
+            # 缩放后的宽度 309~360 包括了目标宽度 352
+            # 缩放后的高度 174~203 大于目标高度 128！！！！！，这里是大于128的   
             resize = np.random.uniform(*self.data_aug_conf['resize_lim']) # [0.193, 0.225]
             resize_dims = (int(W*resize), int(H*resize))
             newW, newH = resize_dims
             
-            # 2. 随机裁剪
-            # bot_pct_lim格式: [min_bot_pct, max_bot_pct]，如[0.0, 0.22]
+            # 2. 随机裁剪：去除图像底部的一定比例，从上方剩余区域中裁剪（保留道路信息）
+            # bot_pct_lim: [min_bot_pct, max_bot_pct]，如[0.0, 0.22]
+            # (1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim'])) * newH 从上到下保留的比例，确保是大于128的
+
             # 缩放后最低高度174，即使裁剪比例0.22，也剩余135高度，大于目标高度128
+                            
+            # ------------------------------------- newW（309~360，可能会小于目标宽度352）
+            # |         crop_w                               
+            # |   crpo_h --------352(fW)--------                              
+            # |          |                              
+            # |          |                             
+            # |          |                      
+            # |          128(fH)                                
+            # |          |                              
+            # |====================================                                       
+            # |      下面是去除的比例(1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim']))                              
+            # | 
+            # newH （174~203，大于目标高度128）
+
             crop_h = int((1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim'])) * newH) - fH # h的起始位置
             crop_w = int(np.random.uniform(0, max(0, newW - fW)))  # w的起始位置，因为newW(如209)可能小于fW(352)，所以这里要用max
             crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)  # (x_min, y_min, x_max, y_max)
+
+            # 缩放后再裁剪，宽度可能不够啊？？？？？？？
             
             # 举例
             # 高度：resize后，高度174，随机裁剪后，高度135，减去fH=128，得到17，17就是高度起始位置，（17, 135）就是图片的裁剪高度
@@ -180,7 +198,7 @@ class NuscData(torch.utils.data.Dataset):
             # ========== 验证/测试模式：固定增强 ==========
             
             # 1. 固定缩放：取刚好能包含final_dim的最小缩放比例
-            resize = max(fH / H, fW / W)
+            resize = max(fH / H, fW / W) # 0.22 352/1600
             resize_dims = (int(W*resize), int(H*resize))
             newW, newH = resize_dims
             
@@ -350,6 +368,7 @@ class NuscData(torch.utils.data.Dataset):
             # 四舍五入后转换为整数索引
             # 等价于pts - (self.bx[:2] - self.dx[:2]/2.)，这里减self.dx[:2]/2.是因为self.bx[:2]已经加过半个偏移量了
             # pts - (self.bx[:2] - self.dx[:2]/2.)的含义是距离（-50, -50）的距离，除以self.dx[:2]，表示多少个格子。0.5米算一个格子
+            # 将自车坐标系的坐标，变化为bev网格的，网格坐标。
             pts = np.round(
                 (pts - self.bx[:2] + self.dx[:2]/2.) / self.dx[:2]
                 ).astype(np.int32)
@@ -452,7 +471,7 @@ class SegmentationData(NuscData):
         cams = self.choose_cams()
         
         # 获取图像数据和相机参数
-        # 包括：原始图像、外参（旋转+平移）、内参、后处理变换
+        # 包括：原始图像、外参（旋转+平移）、内参、后处理变换。给的是一个样本的N个相机的图像堆叠在一起。
         imgs, rots, trans, intrins, post_rots, post_trans = self.get_image_data(rec, cams)
         
         # 获取BEV语义分割标签（二进制掩码）
