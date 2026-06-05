@@ -258,8 +258,33 @@ class CamEncode(nn.Module):
         return x
 
     def forward(self, x):
+        """
+        CamEncode 编码器的前向传播方法，将2D图像转换为深度感知的3D特征。
+        
+        该方法是 Lift-Splat-Shoot 中 "Lift" 步骤的入口，负责将单视角图像
+        转换为深度感知的特征表示，为后续的 voxel pooling 做准备。
+        
+        Args:
+            x (torch.Tensor): 输入的单视角图像张量，形状为 (B, 3, H, W)
+                             B: 批次大小，3: RGB通道，H: 图像高度，W: 图像宽度
+            
+        Returns:
+            torch.Tensor: 深度感知的3D特征张量，形状为 (B, C, D, H', W')
+                          B: 批次大小，C: 特征通道数（如64）
+                          D: 深度步数（如41），H': 下采样后的高度，W': 下采样后的宽度
+        
+        执行流程：
+        1. 调用 get_depth_feat 提取深度分布和深度感知特征
+        2. 返回深度感知特征（丢弃深度分布，由调用方决定是否需要）
+        
+        注意：深度分布被丢弃，如果需要深度信息，应直接调用 get_depth_feat 方法。
+        """
+        # 调用深度特征提取方法
+        # depth: 深度概率分布（被丢弃）
+        # x: 深度感知的3D特征
         depth, x = self.get_depth_feat(x)
 
+        # 返回深度感知特征，用于后续的 voxel pooling
         return x
 
 
@@ -522,9 +547,21 @@ class LiftSplatShoot(nn.Module):
         # in post_rots：(B, N, 3, 3)
         # int points：(B, N, D, H', W', 3)
         # out points：(B, N, D, H', W', 3, 1)
-        points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1))
+        points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1)) # (B, N, D, H', W', 3, 1)
 
-        # 步骤2：图像坐标 → 相机坐标系
+        # [ u ]   [ fx  0  cx ] [ X ]
+        # [ v ] = [ 0  fy  cy ] [ Y ]
+        # [ 1 ]   [ 0   0   1 ] [ Z ]
+
+        # 简化（假设 cx=cy=0, fx=fy=1）：
+        # u = X/Z
+        # v = Y/Z
+        
+        # X = u × Z
+        # Y = v × Z
+        # Z = Z
+
+        # 步骤2：图像坐标 → 相机坐标系， （将像素坐标转换为相机坐标系下的未归一化坐标，内外参在后面使用，这里是假的相机坐标系）
         # 将归一化图像坐标 (u, v) 转换为相机坐标系下的 3D 坐标
         # [x, y, z] = [u*d, v*d, d]，其中 d 是深度值
         points = torch.cat((points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
@@ -541,13 +578,48 @@ class LiftSplatShoot(nn.Module):
         return points
 
     def get_cam_feats(self, x):
-        """Return B x N x D x H/downsample x W/downsample x C
+        """
+        提取多视角相机图像的深度感知特征（Lift 步骤）。
+        
+        该方法是 Lift-Splat-Shoot 中 "Lift" 步骤的核心，将 2D 图像特征提升到 3D 空间，
+        为每个像素位置和深度层生成一个特征向量。
+        
+        Args:
+            x (torch.Tensor): 输入的多视角图像张量，形状为 (B, N, C, imH, imW)
+                             B: 批次大小，N: 相机数量，C: 输入通道数（RGB为3）
+                             imH: 图像高度，imW: 图像宽度
+            
+        Returns:
+            torch.Tensor: 深度感知的3D特征张量，形状为 (B, N, D, H', W', C)
+                          B: 批次大小，N: 相机数量，D: 深度步数
+                          H': 下采样后的高度（imH // downsample）
+                          W': 下采样后的宽度（imW // downsample）
+                          C: 特征通道数（self.camC，通常为64）
+        
+        执行流程：
+        1. 维度合并：将 (B, N, C, H, W) 转换为 (B×N, C, H, W)，以便批量处理
+        2. 特征提取：通过 CamEncode 编码器提取深度感知特征
+        3. 维度拆分：将 (B×N, C+D, H', W') 还原为 (B, N, C, D, H', W')
+        4. 维度重排：将特征通道维度移到最后，形成 (B, N, D, H', W', C)
         """
         B, N, C, imH, imW = x.shape
 
+        # 步骤1：维度合并 - 将批次和相机维度合并，便于批量处理
+        # 输入形状: (B, N, C, imH, imW) → 输出形状: (B×N, C, imH, imW)
         x = x.view(B*N, C, imH, imW)
-        x = self.camencode(x)
+        
+        # 步骤2：特征提取 - 通过相机编码器提取深度感知特征
+        # CamEncode 输出形状: (B×N, C, D, H', W')
+        # 其中前C通道是图像特征，后D通道是深度分布
+        x = self.camencode(x) # H' = imH // 16, W' = imW // 16
+        
+        # 步骤3：维度拆分 - 将合并的维度还原，并分离深度维度
+        # 输入形状: (B×N, C+D, H', W') → 输出形状: (B, N, C, D, H', W')
         x = x.view(B, N, self.camC, self.D, imH//self.downsample, imW//self.downsample)
+        
+        # 步骤4：维度重排 - 将特征通道维度移到最后
+        # 输入形状: (B, N, C, D, H', W') → 输出形状: (B, N, D, H', W', C)
+        # 这样排列便于后续的 voxel pooling 操作
         x = x.permute(0, 1, 3, 4, 5, 2)
 
         return x
