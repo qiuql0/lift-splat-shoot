@@ -91,7 +91,8 @@ def train(version,
                     post_trans.to(device),
                     )
             binimgs = binimgs.to(device)
-            loss = loss_fn(preds, binimgs)
+            
+            loss = loss_fn(preds, binimgs) # （B, 1, 200, 200）
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             opt.step()
@@ -108,8 +109,8 @@ def train(version,
                 writer.add_scalar('train/epoch', epoch, counter)
                 writer.add_scalar('train/step_time', t1 - t0, counter)
 
-            if counter % val_step == 0:
                 val_info = get_val_info(model, valloader, loss_fn, device)
+            if counter % val_step == 0:
                 print('VAL', val_info)
                 writer.add_scalar('val/loss', val_info['loss'], counter)
                 writer.add_scalar('val/iou', val_info['iou'], counter)

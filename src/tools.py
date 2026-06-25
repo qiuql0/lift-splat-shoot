@@ -245,19 +245,85 @@ def gen_dx_bx(xbound, ybound, zbound):
 
 
 def cumsum_trick(x, geom_feats, ranks):
+    """
+    利用累积和高效地聚合相同 voxel 内的特征。
+    
+    核心思想：将排序后的特征累积求和，然后提取每组 voxel 的最终和。
+    
+    原理（以 1D 为例）：
+        输入: [a, b, c, d, e, f]，其中 c,d 同属一个 voxel，e,f 同属一个 voxel
+        cumsum: [a, a+b, a+b+c, a+b+c+d, a+b+c+d+e, a+b+c+d+e+f]
+        
+        检测变化点（相邻 rank 不等）：[True, True, True, False, True, False]
+        kept:   [True, True, True, True, True, False]（最后一个不用）
+        
+        提取变化点处的 cumsum 值：
+        cumsum[kept] = [a, a+b, a+b+c, a+b+c+d, a+b+c+d+e]
+        
+        差分计算最终和：
+        - 第一个 voxel 的和 = cumsum[0] = a
+        - c,d 的和 = cumsum[3] - cumsum[2] = (a+b+c+d) - (a+b+c) = c+d
+        - e,f 的和 = cumsum[4] - cumsum[3] = (a+b+c+d+e) - (a+b+c+d) = e+f
+    
+    Args:
+        x: 排序后的特征，形状 (N, C)
+        geom_feats: 排序后的体素索引，形状 (N, 4) = (x, y, z, batch)
+        ranks: 排序后的秩次，形状 (N,)，用于判断是否属于同一个 voxel
+    
+    Returns:
+        x: 每个 voxel 聚合后的特征和，形状 (M, C)，M <= N
+        geom_feats: 对应的体素索引，形状 (M, 4)
+    """
+    # 步骤1：沿 batch 维度累积求和
+    # 输入: [f₀, f₁, f₂, f₃, f₄, f₅, ...]
+    # 输出: [f₀, f₀+f₁, f₀+f₁+f₂, f₀+f₁+f₂+f₃, ...]
     x = x.cumsum(0)
+    
+    # 步骤2：检测变化点（哪些位置的 voxel 发生了变化）
+    # kept[:-1] = [rank[1]!=rank[0], rank[2]!=rank[1], ...]
+    # 当 rank 发生变化时，说明进入了新的 voxel
+    # kept[i] = True 表示 geom_feats[i] 是一个新 voxel 的开始
     kept = torch.ones(x.shape[0], device=x.device, dtype=torch.bool)
     kept[:-1] = (ranks[1:] != ranks[:-1])
-
+    
+    # 步骤3：只保留每个 voxel 最后一个累积和位置
+    # 同时保留对应的 geom_feats
     x, geom_feats = x[kept], geom_feats[kept]
+    
+    # 步骤4：差分计算每个 voxel 的最终特征和
+    # x[0] 保持不变（第一个 voxel 的和）
+    # x[i] = x[i] - x[i-1]（后续每个 voxel = 当前 cumsum - 上一个 cumsum）
+    # 这样每个 voxel 只保留其内部特征的总和
     x = torch.cat((x[:1], x[1:] - x[:-1]))
-
+    
     return x, geom_feats
 
 
 class QuickCumsum(torch.autograd.Function):
+    """
+    自定义 PyTorch 自动求导函数，实现高效的特征累积和。
+    
+    与 cumsum_trick 函数功能相同，但通过自定义 autograd Function 实现：
+    - forward: 与 cumsum_trick 相同的前向逻辑
+    - backward: 手定义梯度反向传播规则
+    
+    优势：比 PyTorch 官方 cumsum 在特定场景下更快
+    """
     @staticmethod
     def forward(ctx, x, geom_feats, ranks):
+        """
+        前向传播：累积求和聚合特征。
+        
+        Args:
+            ctx: PyTorch autograd 上下文，用于保存反向传播所需变量
+            x: 排序后的特征，形状 (N, C)
+            geom_feats: 排序后的体素索引，形状 (N, 4)
+            ranks: 排序后的秩次，形状 (N,)
+        
+        Returns:
+            x: 每个 voxel 聚合后的特征和，形状 (M, C)
+            geom_feats: 对应的体素索引，形状 (M, 4)
+        """
         x = x.cumsum(0)
         kept = torch.ones(x.shape[0], device=x.device, dtype=torch.bool)
         kept[:-1] = (ranks[1:] != ranks[:-1])
@@ -265,16 +331,38 @@ class QuickCumsum(torch.autograd.Function):
         x, geom_feats = x[kept], geom_feats[kept]
         x = torch.cat((x[:1], x[1:] - x[:-1]))
 
-        # save kept for backward
+        # 保存 kept 用于反向传播
         ctx.save_for_backward(kept)
 
-        # no gradient for geom_feats
+        # 标记 geom_feats 不需要梯度
         ctx.mark_non_differentiable(geom_feats)
 
         return x, geom_feats
 
     @staticmethod
     def backward(ctx, gradx, gradgeom):
+        """
+        反向传播：计算梯度。
+        
+        梯度计算的核心思想：
+        - 前向：同一 voxel 的多个特征 f₁, f₂, ..., fₖ 累加为 S
+        - 反向：梯度 ∂L/∂S 需要反向传播给每个 fᵢ
+        - 由于前向是求和操作，∂L/∂fᵢ = ∂L/∂S（链式法则）
+        
+        具体步骤：
+        1. back[i] 表示输出位置 i 应该从输入的哪个位置取值
+        2. cumsum(kept) 得到每个位置的累积计数
+        3. back[kept] -= 1 调整索引，使每个 voxel 的梯度正确映射
+        
+        Args:
+            ctx: 包含 forward 阶段保存的 kept 变量
+            gradx: 输出的梯度，形状 (M, C)
+            gradgeom: geom_feats 的梯度（始终为 None）
+        
+        Returns:
+            gradx 的反向梯度：形状 (N, C)，每个原始位置获得对应的梯度
+            gradgeom：None（标记为不可求导）
+        """
         kept, = ctx.saved_tensors
         back = torch.cumsum(kept, 0)
         back[kept] -= 1
