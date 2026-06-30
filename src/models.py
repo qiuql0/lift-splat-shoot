@@ -48,8 +48,8 @@ class Up(nn.Module):
         self.up = nn.Upsample(scale_factor=scale_factor, mode='bilinear',
                               align_corners=True)
 
-        # 卷积序列：处理融合后的特征
         # 结构：Conv2d -> BatchNorm2d -> ReLU -> Conv2d -> BatchNorm2d -> ReLU
+        # 不改变尺寸，值改变通道数
         self.conv = nn.Sequential(
             # 第一层卷积：将输入通道映射到输出通道
             # kernel_size=3, padding=1 保持H和W不变（same padding）
@@ -177,24 +177,25 @@ class CamEncode(nn.Module):
         x = self.get_eff_depth(x)
         
         # 步骤2：通过depthnet生成深度分布和特征表示
-        # depthnet是1x1卷积，输入512通道，输出D+C通道
+        # depthnet是1x1卷积，输入512通道，输出D+C通道（41+64=105）
         # 输入：(B, 512, H/16, W/16) → 输出：(B, D+C, H/16, W/16)
         x = self.depthnet(x)
 
         # 步骤3：提取深度分布（前D通道）并通过softmax归一化
-        # x[:, :self.D] 取前D通道，形状为 (B, D, H/16, W/16)
-        # get_depth_dist内部调用softmax(dim=1)，使每个空间位置的深度概率和为1
-        depth = self.get_depth_dist(x[:, :self.D])  # 形状：(B, D, H/16, W/16)
+        # 输入 x[:, :self.D] 取前D通道，形状为 (B, D, H/16, W/16)
+        # 输出：(B, D, H/16, W/16)
+        depth = self.get_depth_dist(x[:, :self.D])
         
         # 步骤4：生成深度感知的3D特征
+
+        # depth.unsqueeze(1) 在通道维度扩展，形状变为 (B, 1, D, H/16, W/16)
+        
         # x[:, self.D:(self.D + self.C)] 取后C通道作为特征，形状为 (B, C, H/16, W/16)
         # unsqueeze(2) 在深度维度扩展，形状变为 (B, C, 1, H/16, W/16)
         
-        # depth.unsqueeze(1) 在通道维度扩展，形状变为 (B, 1, D, H/16, W/16)
         # 逐元素相乘后，每个深度层的特征被对应的深度概率加权
-        
-        new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)
         # 输出形状：(B, C, D, H/16, W/16)，即 (B, 通道数, 深度步数, 高度, 宽度)
+        new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)
 
         return depth, new_x
 
@@ -307,7 +308,7 @@ class BevEncode(nn.Module):
         trunk = resnet18(pretrained=False, zero_init_residual=True)
         
         # 第一层卷积：将输入通道映射到64通道
-        # kernel_size=7, stride=2, padding=3：使特征图尺寸减半（same padding的变种）
+        # (B, 64, 200, 200) -》 (B, 64, 100, 100)
         # bias=False：后续有BN层，无需额外偏置
         self.conv1 = nn.Conv2d(inC, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
@@ -363,27 +364,29 @@ class BevEncode(nn.Module):
         """
         # 阶段1：初始卷积层（下采样2倍）
         # 输入：(B, inC, H_bev, W_bev) → 输出：(B, 64, H_bev/2, W_bev/2)
-        x = self.conv1(x)
+        x = self.conv1(x) # (B, 64, 200, 200) -》 (B, 64, 100, 100)
         x = self.bn1(x)
         x = self.relu(x)
 
         # 阶段2：ResNet-18残差块（共下采样4倍）
         # layer1: (B, 64, H_bev/2, W_bev/2) → (B, 64, H_bev/2, W_bev/2) （尺寸不变）
-        x1 = self.layer1(x)  # 保存layer1输出用于跳跃连接
+        x1 = self.layer1(x)  # (B, 64, 100, 100) -》 (B, 64, 100, 100)
+
         # layer2: (B, 64, H_bev/2, W_bev/2) → (B, 128, H_bev/4, W_bev/4) （下采样2倍）
-        x = self.layer2(x1)
+        x = self.layer2(x1) # (B, 64, 100, 100) -》 (B, 128, 50, 50)
+
         # layer3: (B, 128, H_bev/4, W_bev/4) → (B, 256, H_bev/8, W_bev/8) （下采样2倍）
-        x = self.layer3(x)
+        x = self.layer3(x) # (B, 128, 50, 50) -》 (B, 256, 25, 25)
 
         # 阶段3：第一次上采样融合（U-Net跳跃连接）
         # 输入：layer3输出(256通道) 和 layer1输出(64通道)
         # 输出：(B, 256, H_bev/2, W_bev/2) （尺寸放大4倍）
-        x = self.up1(x, x1)
+        x = self.up1(x, x1) # (B, 256, 25, 25) + (B, 64, 100, 100) -》 (B, 256, 100, 100) 
         
         # 阶段4：第二次上采样（生成最终输出）
         # 输入：(B, 256, H_bev/2, W_bev/2)
         # 输出：(B, outC, H_bev, W_bev) （尺寸放大2倍，通道数变为outC）
-        x = self.up2(x)
+        x = self.up2(x) # (B, 256, 100, 100) -》 (B, 1, 200, 200)
 
         return x
 
@@ -428,7 +431,7 @@ class LiftSplatShoot(nn.Module):
         self.D, _, _, _ = self.frustum.shape  # D: 深度步数（如41，对应深度范围4m-45m）
         
         # 初始化相机编码器：将2D图像转换为深度感知的3D特征
-        # 为每个像素位置和深度生成一个64维的特征向量
+        # 为每个像素位置(抽稀了的)和深度生成一个64维的特征向量
         self.camencode = CamEncode(self.D, self.camC, self.downsample)  # (深度步数, 特征通道数, 下采样因子)
         
         # 初始化BEV编码器：将BEV特征映射到最终输出（如分割掩码）
@@ -602,20 +605,19 @@ class LiftSplatShoot(nn.Module):
         3. 维度拆分：将 (B×N, C+D, H', W') 还原为 (B, N, C, D, H', W')
         4. 维度重排：将特征通道维度移到最后，形成 (B, N, D, H', W', C)
         """
-        B, N, C, imH, imW = x.shape
+        B, N, C, imH, imW = x.shape # (4, 5, 3, 128, 352)
 
         # 步骤1：维度合并 - 将批次和相机维度合并，便于批量处理
         # 输入形状: (B, N, C, imH, imW) → 输出形状: (B×N, C, imH, imW)
         x = x.view(B*N, C, imH, imW)
         
         # 步骤2：特征提取 - 通过相机编码器提取深度感知特征
-        # CamEncode 输出形状: (B×N, C, D, H', W')
-        # 其中前C通道是图像特征，后D通道是深度分布
-        x = self.camencode(x) # H' = imH // 16, W' = imW // 16
+        # CamEncode 输出形状: (B×N, C, D, H', W') 其中C,是通道也是图像特征，D通道是深度分布
+        x = self.camencode(x) # (B×N, 3, 128, 352) -》 (B×N, 64, 41, 8, 22)
         
-        # 步骤3：维度拆分 - 将合并的维度还原，并分离深度维度
-        # 输入形状: (B×N, C+D, H', W') → 输出形状: (B, N, C, D, H', W')
-        x = x.view(B, N, self.camC, self.D, imH//self.downsample, imW//self.downsample)
+        # 步骤3：维度拆分 - 将合并的维度还原
+        # 输入形状: (B×N, C,D, H', W') → 输出形状: (B, N, C, D, H', W')
+        x = x.view(B, N, self.camC, self.D, imH//self.downsample, imW//self.downsample) #(B, 5, 64, 41, 8, 22)
         
         # 步骤4：维度重排 - 将特征通道维度移到最后
         # 输入形状: (B, N, C, D, H', W') → 输出形状: (B, N, D, H', W', C)
@@ -625,18 +627,23 @@ class LiftSplatShoot(nn.Module):
         return x
 
     def voxel_pooling(self, geom_feats, x):
-        B, N, D, H, W, C = x.shape
-        Nprime = B*N*D*H*W
+        # geom_feats：(B, 5, 41, 8, 22, 3)
+        B, N, D, H, W, C = x.shape # (4, 5, 41, 8, 22, 64)
+        Nprime = B*N*D*H*W # 1640
 
         # flatten x
-        x = x.reshape(Nprime, C)
+        x = x.reshape(Nprime, C) # (1640, 64)
 
         # flatten indices
+        # dx: (0.5, 0.5, 20.0)  bx: (-49.75, -49.75, 0.0)
         geom_feats = ((geom_feats - (self.bx - self.dx/2.)) / self.dx).long()
         geom_feats = geom_feats.view(Nprime, 3)
+        # 为了保证 不同 batch 样本的体素不会被错误地合并到一起，把 batch 索引作为体素 key 的第 4 个维度显式记录下来
+        # torch.full([Nprime//B, 1], ix) 生成一个全是 ix 的列向量
+        # torch.cat([...for ix in range(B)]) 把 B 个这样的向量纵向拼起来，得到形状 (Nprime, 1)
         batch_ix = torch.cat([torch.full([Nprime//B, 1], ix,
-                             device=x.device, dtype=torch.long) for ix in range(B)])
-        geom_feats = torch.cat((geom_feats, batch_ix), 1)
+                             device=x.device, dtype=torch.long) for ix in range(B)]) #(Nprime, 1)
+        geom_feats = torch.cat((geom_feats, batch_ix), 1) # (Nprime, 4)
 
         # filter out points that are outside box
         kept = (geom_feats[:, 0] >= 0) & (geom_feats[:, 0] < self.nx[0])\
@@ -646,25 +653,44 @@ class LiftSplatShoot(nn.Module):
         geom_feats = geom_feats[kept]
 
         # get tensors from the same voxel next to each other
+        # 将 4D 体素坐标 (x_idx, y_idx, z_idx, batch_idx) 按行主序线性化为一个唯一的整数 rank
+        # 公式：rank = x · (ny·nz·B) + y · (nz·B) + z · B + b
+        # 每一项的乘数 = 比它低位的所有维度容量乘积，等价于把虚拟数组 (nx, ny, nz, B) 展平为 1D 偏移
+        # 这样保证：同一 batch 同一体素的点 rank 完全相同；不同 batch 或不同体素 rank 一定不同
+        # 后续 argsort 后，相同 rank 的点在内存中连续，QuickCumsum 一次扫描即可完成体素 sum-pool
         ranks = geom_feats[:, 0] * (self.nx[1] * self.nx[2] * B)\
             + geom_feats[:, 1] * (self.nx[2] * B)\
             + geom_feats[:, 2] * B\
             + geom_feats[:, 3]
+        # 按 rank 升序排序：相同 rank（即同一 batch 同一体素）的点在排序后必然相邻
+        # argsort 返回排序所需的索引置换，用它同步重排 x / geom_feats / ranks 三个张量
+        # 保证 (特征, 体素坐标, rank) 三者的行对应关系不被破坏
+        # 排序后形成形如 [voxelA, voxelA, voxelA, voxelB, voxelB, ...] 的连续段，是下游 cumsum trick 的前提
         sorts = ranks.argsort()
         x, geom_feats, ranks = x[sorts], geom_feats[sorts], ranks[sorts]
 
         # cumsum trick
         if not self.use_quickcumsum:
-            x, geom_feats = cumsum_trick(x, geom_feats, ranks)
+            x, geom_feats = cumsum_trick(x, geom_feats, ranks)# x:(M, C), geom_feats:(M, 4) （M = 不同体素数）
         else:
-            x, geom_feats = QuickCumsum.apply(x, geom_feats, ranks)
+            x, geom_feats = QuickCumsum.apply(x, geom_feats, ranks) 
 
         # griddify (B x C x Z x X x Y)
-        final = torch.zeros((B, C, self.nx[2], self.nx[0], self.nx[1]), device=x.device)
-        final[geom_feats[:, 3], :, geom_feats[:, 2], geom_feats[:, 0], geom_feats[:, 1]] = x
+        final = torch.zeros((B, C, self.nx[2], self.nx[0], self.nx[1]), device=x.device) # (4, 64, 1, 200, 200)
+        
+        # 把 cumsum_trick / QuickCumsum 输出的稀疏池化结果 x:(M, C) 散列回密集 5D BEV 张量。
+        # geom_feats 的列顺序固定为 (x_idx, y_idx, z_idx, batch_idx)，
+        # 而 final 的轴顺序是 (B, C, Z, X, Y)，所以这里要错位匹配：
+        #   final[batch, :, z, x, y] = x  →  索引列依次取 [3, _, 2, 0, 1]
+        # 等价写法
+        # for i in range(M):
+        #     b, z, x_i, y_i = geom_feats[i, 3], geom_feats[i, 2], geom_feats[i, 0], geom_feats[i, 1]
+        #     final[b, :, z, x_i, y_i] = x[i]      # 把第 i 个体素的 C 维特征写进去
+
+        final[geom_feats[:, 3], :, geom_feats[:, 2], geom_feats[:, 0], geom_feats[:, 1]] = x # (4, 64, 1, 200, 200)
 
         # collapse Z
-        final = torch.cat(final.unbind(dim=2), 1)
+        final = torch.cat(final.unbind(dim=2), 1) # (4, 64*1, 200, 200)
 
         return final
 
@@ -710,14 +736,14 @@ class LiftSplatShoot(nn.Module):
            - 使用累积求和技巧聚合同一体素内的特征
            - 输出形状：(B, C, H_bev, W_bev)
         """
-        # 步骤1：计算每个像素的 3D 几何位置
-        geom = self.get_geometry(rots, trans, intrins, post_rots, post_trans)
+        # 步骤1：计算每个视锥点在车体坐标系中的 3D 几何位置
+        geom = self.get_geometry(rots, trans, intrins, post_rots, post_trans)  # (B, 5, 41, 8, 22, 3)
         
         # 步骤2：提取相机特征并扩展到深度维度（Lift 步骤）
-        x = self.get_cam_feats(x)
+        x = self.get_cam_feats(x) # (B, 5, 3, 128, 352) -》 (B, 5, 41, 8, 22, 64)
 
         # 步骤3：将特征投影并聚合到 BEV 体素网格（Splat 步骤）
-        x = self.voxel_pooling(geom, x)
+        x = self.voxel_pooling(geom, x) # 输出： (4, 64*1, 200, 200)
 
         return x
 
@@ -751,10 +777,10 @@ class LiftSplatShoot(nn.Module):
         2. bevencode: 通过卷积编码器处理 BEV 特征，输出最终预测
         """
         # 阶段1：Lift-Splat - 将多视角图像转换为 BEV 体素特征
-        x = self.get_voxels(x, rots, trans, intrins, post_rots, post_trans)
+        x = self.get_voxels(x, rots, trans, intrins, post_rots, post_trans) # 输出： (4, 64*1, 200, 200)
         
         # 阶段2：Shoot - 通过 BEV 编码器生成最终预测
-        x = self.bevencode(x)
+        x = self.bevencode(x)  # 输出：(4, 1, 200, 200)
         
         return x
 

@@ -245,11 +245,50 @@ def gen_dx_bx(xbound, ybound, zbound):
 
 
 def cumsum_trick(x, geom_feats, ranks):
+    """
+    用"前缀和 + 差分"实现按段求和（segment-sum），完成 Splat 阶段的体素聚合。
+
+    调用前提（由 voxel_pooling 保证）：
+      - 已按 ranks 排序，使同一体素的点在 x 中相邻摆放
+      - ranks[i] == ranks[i+1]  当且仅当第 i 和 i+1 个点属于同一体素
+      - 同段内 geom_feats 的值完全相同（同体素同 batch）
+
+    Args:
+        x          (N, C)  视锥点特征，按 rank 排好序
+        geom_feats (N, 4)  对应的体素坐标 (x_idx, y_idx, z_idx, batch_idx)
+        ranks      (N,)    线性化后的体素 key，已升序
+
+    Returns:
+        x          (M, C)  每个体素内所有点特征的求和（M = 不同体素数）
+        geom_feats (M, 4)  对应的体素坐标（同段任取一行即可）
+
+    数学等价于 scatter_add，但用两次 O(N) 线性扫描完成，对 GPU 更友好；
+    QuickCumsum 是它的自定义 autograd 加速版，用 cumsum_check 验证两者梯度一致。
+    举例：
+    x_in      = [1, 2, 3, 10, 20, 100]       # 6 个点的特征
+    ranks     = [5, 5, 5,  7,  7,   9]       # 3 个体素：rank=5 三点、rank=7 两点、rank=9 一点
+
+    cumsum    = [1, 3, 6, 16, 36, 136]
+    kept      = [F, F, T,  F,  T,   T]       # 每段最后一个
+    keep_x    = [6, 36, 136]                 # 累积和到每段末尾
+    diff      = [6, 36−6, 136−36] = [6, 30, 100]   # 即每个体素的求和 (1+2+3, 10+20, 100)
+
+    """
+    # 步骤1：沿点维做累计前缀和。x[i] 变成 "前 i+1 个点特征之和"
     x = x.cumsum(0)
+
+    # 步骤2：标记每个体素段的"段末位置"。
+    # kept[i]=True 表示第 i 个点是它所在段的最后一个（下一个点 rank 不同）；
+    # 最后一行初始化为 True，保证最后一段也被保留。
     kept = torch.ones(x.shape[0], device=x.device, dtype=torch.bool)
     kept[:-1] = (ranks[1:] != ranks[:-1])
 
+    # 步骤3：只保留各段末尾的累积和，以及对应的体素坐标（段内 geom_feats 完全一致）
+    # 此时 x 形如 [S1, S1+S2, S1+S2+S3, ...]，Sk 是第 k 个体素内的特征之和
     x, geom_feats = x[kept], geom_feats[kept]
+
+    # 步骤4：相邻差分还原出每段（即每个体素）的实际求和
+    # 第 0 段保留原值；第 k 段 = 段k 累积 − 段k-1 累积 = 段内之和
     x = torch.cat((x[:1], x[1:] - x[:-1]))
 
     return x, geom_feats
