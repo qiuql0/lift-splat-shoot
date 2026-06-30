@@ -290,13 +290,35 @@ def cumsum_trick(x, geom_feats, ranks):
     # 步骤4：相邻差分还原出每段（即每个体素）的实际求和
     # 第 0 段保留原值；第 k 段 = 段k 累积 − 段k-1 累积 = 段内之和
     x = torch.cat((x[:1], x[1:] - x[:-1]))
-
+    
     return x, geom_feats
 
 
 class QuickCumsum(torch.autograd.Function):
+    """
+    自定义 PyTorch 自动求导函数，实现高效的特征累积和。
+    
+    与 cumsum_trick 函数功能相同，但通过自定义 autograd Function 实现：
+    - forward: 与 cumsum_trick 相同的前向逻辑
+    - backward: 手定义梯度反向传播规则
+    
+    优势：比 PyTorch 官方 cumsum 在特定场景下更快
+    """
     @staticmethod
     def forward(ctx, x, geom_feats, ranks):
+        """
+        前向传播：累积求和聚合特征。
+        
+        Args:
+            ctx: PyTorch autograd 上下文，用于保存反向传播所需变量
+            x: 排序后的特征，形状 (N, C)
+            geom_feats: 排序后的体素索引，形状 (N, 4)
+            ranks: 排序后的秩次，形状 (N,)
+        
+        Returns:
+            x: 每个 voxel 聚合后的特征和，形状 (M, C)
+            geom_feats: 对应的体素索引，形状 (M, 4)
+        """
         x = x.cumsum(0)
         kept = torch.ones(x.shape[0], device=x.device, dtype=torch.bool)
         kept[:-1] = (ranks[1:] != ranks[:-1])
@@ -304,16 +326,38 @@ class QuickCumsum(torch.autograd.Function):
         x, geom_feats = x[kept], geom_feats[kept]
         x = torch.cat((x[:1], x[1:] - x[:-1]))
 
-        # save kept for backward
+        # 保存 kept 用于反向传播
         ctx.save_for_backward(kept)
 
-        # no gradient for geom_feats
+        # 标记 geom_feats 不需要梯度
         ctx.mark_non_differentiable(geom_feats)
 
         return x, geom_feats
 
     @staticmethod
     def backward(ctx, gradx, gradgeom):
+        """
+        反向传播：计算梯度。
+        
+        梯度计算的核心思想：
+        - 前向：同一 voxel 的多个特征 f₁, f₂, ..., fₖ 累加为 S
+        - 反向：梯度 ∂L/∂S 需要反向传播给每个 fᵢ
+        - 由于前向是求和操作，∂L/∂fᵢ = ∂L/∂S（链式法则）
+        
+        具体步骤：
+        1. back[i] 表示输出位置 i 应该从输入的哪个位置取值
+        2. cumsum(kept) 得到每个位置的累积计数
+        3. back[kept] -= 1 调整索引，使每个 voxel 的梯度正确映射
+        
+        Args:
+            ctx: 包含 forward 阶段保存的 kept 变量
+            gradx: 输出的梯度，形状 (M, C)
+            gradgeom: geom_feats 的梯度（始终为 None）
+        
+        Returns:
+            gradx 的反向梯度：形状 (N, C)，每个原始位置获得对应的梯度
+            gradgeom：None（标记为不可求导）
+        """
         kept, = ctx.saved_tensors
         back = torch.cumsum(kept, 0)
         back[kept] -= 1
