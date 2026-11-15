@@ -171,6 +171,10 @@ normalize_img = torchvision.transforms.Compose((
 ))
 
 
+    # xbound=[-50.0, 50.0, 0.5],
+    # ybound=[-50.0, 50.0, 0.5],
+    # zbound=[-10.0, 10.0, 20.0],
+    # dbound=[4.0, 45.0, 1.0],
 def gen_dx_bx(xbound, ybound, zbound):
     dx = torch.Tensor([row[2] for row in [xbound, ybound, zbound]])
     bx = torch.Tensor([row[0] + row[2]/2.0 for row in [xbound, ybound, zbound]])

@@ -76,6 +76,7 @@ def lidar_check(version,
 
             img_pts = model.get_geometry(rots, trans, intrins, post_rots, post_trans)
 
+            # imgs：B × N × C × H × W
             for si in range(imgs.shape[0]):
                 plt.clf()
                 final_ax = plt.subplot(gs[:, 5:6])

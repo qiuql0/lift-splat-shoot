@@ -1,0 +1,82 @@
+# Lift-Splat-Shoot — Windows 依赖锁定清单
+#
+# 适用环境：Windows x64 + Python 3.10 + NVIDIA GPU（CUDA 11.8）
+# 本清单由已验证可用的环境导出，可复现 src/ 全部功能。
+#
+# 安装顺序不能颠倒：
+#
+#   1) 先装 CUDA 版 PyTorch
+#      注意：Windows 上 PyPI 默认源给的是 CPU 版，必须走 PyTorch 官方索引。
+#
+#      pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 \
+#          --index-url https://download.pytorch.org/whl/cu118
+#
+#      国内加速（实测约 6.5 MB/s，官方源在国内仅约 1 MB/s）：
+#      https://mirror.sjtu.edu.cn/pytorch-wheels/cu118/
+#      将其中的 torch-2.1.2%2Bcu118-cp310-cp310-win_amd64.whl 与
+#      torchvision-0.16.2%2Bcu118-cp310-cp310-win_amd64.whl 下载后本地安装：
+#      pip install --no-deps <两个 .whl 的本地路径>
+#
+#   2) 再装其余依赖
+#      pip install -r requirements-win.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 注意：本文件不包含 torch / torchvision，请按第 1 步单独安装。
+
+# --- 直接依赖 ---
+nuscenes-devkit==1.1.11
+efficientnet_pytorch==0.7.0
+tensorboardX==2.6.5
+fire==0.7.1
+tqdm==4.70.1
+pyquaternion==0.9.9
+scikit-learn==1.7.2
+scipy==1.15.3
+descartes==1.1.0
+cachetools==7.2.0
+
+# --- 以下三项是踩坑后必须锁死的，不要升级 ---
+#
+# numpy 2.x 会让 matplotlib 3.5.3 与 Shapely 1.8.5 直接崩溃
+# （这两个包是针对 numpy 1.x ABI 编译的，会报
+#  "A module that was compiled using NumPy 1.x cannot be run in NumPy 2.x"）
+numpy==1.26.4
+
+# nuscenes-devkit 1.1.11 要求 matplotlib<3.6.0
+matplotlib==3.5.3
+
+# nuscenes-devkit 1.1.11 要求 Shapely<2.0.0
+Shapely==1.8.5.post1
+
+# 注意：opencv-python 5.x 反向要求 numpy>=2，与上面的 numpy 锁定冲突，
+# 因此必须留在 4.x。代码中只用到 cv2.fillPoly，4.x 完全够用。
+opencv-python==4.10.0.84
+
+# --- 传递依赖（仅供完全复现，一般无需手动改动） ---
+certifi==2026.7.22
+charset-normalizer==3.5.2
+cloudpickle==3.1.2
+colorama==0.4.6
+cycler==0.12.1
+filelock==4.0.7
+fonttools==4.65.0
+fsspec==2026.9.0
+idna==3.20
+Jinja2==3.1.6
+joblib==1.6.0
+kiwisolver==1.5.1
+MarkupSafe==3.0.3
+mpmath==1.3.0
+networkx==3.4.2
+packaging==26.3
+pillow==12.3.0
+protobuf==7.36.2
+pycocotools==2.0.11
+pyparsing==3.3.3
+python-dateutil==2.9.0.post0
+requests==2.34.2
+six==1.17.0
+sympy==1.14.0
+termcolor==3.3.0
+threadpoolctl==3.7.0
+typing_extensions==4.16.0
+urllib3==2.8.0
