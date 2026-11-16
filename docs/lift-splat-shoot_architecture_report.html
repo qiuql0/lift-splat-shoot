@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lift-Splat-Shoot · 代码架构报告</title>
+<style>
+:root{
+  --bg:#0f1117; --bg-elevated:#161822; --card-bg:#1a1d2e; --card-border:#2a2d3e;
+  --text:#e2e8f0; --text-secondary:#8b95a8; --text-muted:#5a6478; --border:#252836;
+  --primary:#60a5fa; --accent-green:#34d399; --accent-orange:#fbbf24; --accent-red:#f87171;
+  --accent-purple:#a78bfa; --accent-cyan:#22d3ee; --accent-pink:#f472b6; --code-bg:#1e2130;
+  --sidebar-w:280px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Noto Sans SC',sans-serif;line-height:1.65;display:flex}
+code{background:var(--code-bg);padding:1.5px 6px;border-radius:5px;font-family:'SF Mono',Menlo,Monaco,'Courier New',monospace;font-size:.88em;color:#93c5fd}
+pre{background:var(--code-bg);border:1px solid var(--card-border);border-radius:10px;padding:16px 18px;overflow-x:auto;margin:12px 0}
+pre code{background:none;padding:0;color:var(--text-secondary)}
+
+/* ---------- sidebar ---------- */
+.sidebar{position:fixed;top:0;left:0;bottom:0;width:var(--sidebar-w);background:linear-gradient(180deg,#111320,#0d0f18);border-right:1px solid var(--border);overflow-y:auto;padding:22px 0 40px;z-index:50;transition:transform .25s ease}
+.sidebar.hidden{transform:translateX(-100%)}
+.sidebar h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);padding:14px 24px 6px;font-weight:700}
+.sidebar .brand{padding:0 24px 16px;font-size:16px;font-weight:700;color:var(--text);border-bottom:1px solid var(--border);margin-bottom:6px}
+.sidebar .brand span{color:var(--primary)}
+.sidebar a{display:block;padding:6px 24px;color:var(--text-secondary);text-decoration:none;font-size:13.5px;border-left:2px solid transparent;transition:all .12s}
+.sidebar a:hover{color:#93c5fd;background:rgba(96,165,250,.06)}
+.sidebar a.active{color:#fff;background:rgba(96,165,250,.14);border-left-color:var(--primary);box-shadow:inset 0 0 24px rgba(96,165,250,.08)}
+.badge{font-size:10px;background:rgba(96,165,250,.18);color:var(--primary);padding:1px 6px;border-radius:5px;margin-left:6px;font-weight:600}
+.sidebar-toggle{position:fixed;top:14px;left:14px;z-index:60;width:38px;height:38px;border-radius:9px;border:1px solid var(--card-border);background:var(--bg-elevated);color:var(--text);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:left .25s ease}
+.sidebar-toggle:hover{background:#1f2333;border-color:var(--primary)}
+.sidebar.hidden ~ .sidebar-toggle{left:14px}
+.sidebar:not(.hidden) ~ .sidebar-toggle{left:calc(var(--sidebar-w) + 14px)}
+
+/* ---------- main ---------- */
+.main{margin-left:var(--sidebar-w);flex:1;min-width:0;padding:34px 46px 90px;max-width:1180px;transition:margin-left .25s ease}
+.main.wide{margin-left:0}
+.hero{background:linear-gradient(135deg,#1e3a5f 0%,#2d1b69 50%,#1a1d2e 100%);border:1px solid rgba(96,165,250,.15);border-radius:16px;padding:34px 38px;margin-bottom:36px;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+.hero h1{font-size:30px;font-weight:800;letter-spacing:-.01em;margin-bottom:8px}
+.hero .sub{color:var(--text-secondary);font-size:15px;margin-bottom:20px;max-width:860px}
+.hero .stats{display:flex;flex-wrap:wrap;gap:30px}
+.stat .num{font-size:26px;font-weight:800;color:var(--primary)}
+.stat .lbl{font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em}
+
+.section{margin-bottom:44px;scroll-margin-top:24px}
+.section > h2{font-size:22px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:10px}
+.section > h2::before{content:'';width:4px;height:22px;background:var(--primary);border-radius:2px;display:inline-block}
+.section > .lead{color:var(--text-secondary);margin-bottom:18px;font-size:14.5px}
+h3{font-size:16.5px;font-weight:700;margin:24px 0 10px;color:var(--text)}
+h4{font-size:14px;font-weight:700;margin:16px 0 8px;color:var(--text-secondary)}
+p{color:var(--text-secondary);font-size:14.5px;margin-bottom:12px}
+ul,ol{margin:0 0 14px 22px;color:var(--text-secondary);font-size:14.5px}
+li{margin-bottom:6px}
+
+.card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:12px;padding:20px 22px;margin:16px 0;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+details.detail-card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:12px;margin:14px 0;box-shadow:0 2px 8px rgba(0,0,0,.4);overflow:hidden}
+details.detail-card > summary{padding:15px 20px;cursor:pointer;font-weight:600;font-size:15px;list-style:none;display:flex;align-items:center;gap:10px;user-select:none}
+details.detail-card > summary::-webkit-details-marker{display:none}
+details.detail-card > summary:hover{background:rgba(96,165,250,.04)}
+details.detail-card[open] > summary{border-bottom:1px solid var(--border)}
+.detail-body{padding:20px 22px}
+
+.tag{font-size:11px;font-weight:700;padding:2px 9px;border-radius:6px;letter-spacing:.02em;white-space:nowrap}
+.tag-blue{background:rgba(96,165,250,.16);color:#93c5fd}
+.tag-green{background:rgba(52,211,153,.16);color:#6ee7b7}
+.tag-orange{background:rgba(251,191,36,.16);color:#fcd34d}
+.tag-purple{background:rgba(167,139,250,.16);color:#c4b5fd}
+.tag-red{background:rgba(248,113,113,.16);color:#fca5a5}
+.tag-cyan{background:rgba(34,211,238,.16);color:#67e8f9}
+.tag-pink{background:rgba(244,114,182,.16);color:#f9a8d4}
+
+.data-table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;border:1px solid var(--card-border);border-radius:10px;overflow:hidden}
+.data-table th{background:var(--bg-elevated);color:var(--text);text-align:left;padding:10px 14px;font-weight:700;font-size:12.5px;border-bottom:1px solid var(--card-border)}
+.data-table td{padding:9px 14px;border-bottom:1px solid var(--border);color:var(--text-secondary);vertical-align:top}
+.data-table tr:last-child td{border-bottom:none}
+.data-table tr:hover td{background:rgba(96,165,250,.04)}
+
+/* ---------- diagram viewer ---------- */
+.diagram-viewer{background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:12px;margin:16px 0;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+.diagram-title{padding:10px 16px;font-size:12.5px;font-weight:700;color:var(--text-secondary);border-bottom:1px solid var(--border);letter-spacing:.02em}
+.diagram-canvas{position:relative;padding:20px;cursor:pointer;min-height:80px;display:flex;align-items:center;justify-content:center;overflow:auto}
+.diagram-canvas:hover{background:rgba(96,165,250,.03)}
+.diagram-canvas .mermaid{pointer-events:none;width:100%;display:flex;justify-content:center}
+.diagram-canvas::after{content:'点击查看大图';position:absolute;right:12px;bottom:10px;font-size:11px;color:var(--text-muted);opacity:0;transition:opacity .2s;background:rgba(15,17,23,.8);padding:2px 8px;border-radius:5px}
+.diagram-canvas:hover::after{opacity:1}
+
+.fs-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.92);z-index:200;display:none;flex-direction:column}
+.fs-overlay.open{display:flex}
+.fs-toolbar{display:flex;align-items:center;gap:10px;padding:12px 18px;background:rgba(22,24,34,.95);border-bottom:1px solid var(--border);flex-shrink:0}
+.fs-name{font-weight:700;font-size:14px;color:var(--text);margin-right:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fs-btn{background:var(--card-bg);border:1px solid var(--card-border);color:var(--text);padding:6px 13px;border-radius:8px;cursor:pointer;font-size:12.5px;transition:all .12s;white-space:nowrap}
+.fs-btn:hover{background:#232842;border-color:var(--primary);color:#fff}
+.fs-canvas{position:relative;flex:1;overflow:hidden;cursor:grab}
+.fs-canvas:active{cursor:grabbing}
+.fs-mermaid{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
+.fs-zoom{position:absolute;right:16px;bottom:14px;font-size:12px;color:var(--text-secondary);background:rgba(22,24,34,.9);padding:4px 12px;border-radius:7px;border:1px solid var(--border)}
+
+/* ---------- pipeline ---------- */
+.pipeline-step{display:flex;gap:16px;margin-bottom:16px;position:relative}
+.pipeline-step:not(:last-child)::before{content:'';position:absolute;left:17px;top:38px;bottom:-8px;width:2px;background:var(--border)}
+.step-num{width:36px;height:36px;border-radius:50%;background:rgba(96,165,250,.15);border:1px solid rgba(96,165,250,.4);color:var(--primary);font-weight:800;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0;z-index:1}
+.step-content{flex:1;padding-top:3px}
+.step-title{font-weight:700;font-size:14.5px;color:var(--text);margin-bottom:3px}
+.step-desc{font-size:13.5px;color:var(--text-secondary)}
+
+/* ---------- file tree ---------- */
+.filetree{background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:10px;padding:18px 22px;margin:14px 0;overflow-x:auto;font-family:'SF Mono',Menlo,Monaco,'Courier New',monospace;font-size:13px;line-height:1.5}
+.ft-node{user-select:none}
+.ft-row{display:flex;align-items:baseline;gap:7px;padding:3.5px 0;border-radius:5px}
+.ft-row.has-children{cursor:pointer}
+.ft-row.has-children:hover{background:rgba(96,165,250,.05)}
+.ft-row.has-children:hover .ft-name{color:#93c5fd}
+.ft-arrow{display:inline-block;width:11px;color:var(--text-muted);font-size:9px;flex-shrink:0;transition:transform .15s;transform:translateY(-1px)}
+.ft-node.collapsed > .ft-row .ft-arrow{transform:rotate(-90deg) translateX(1px)}
+.ft-leaf .ft-arrow{visibility:hidden}
+.ft-name{font-weight:600;color:var(--primary);white-space:nowrap}
+.ft-leaf .ft-name{font-weight:500;color:var(--text)}
+.ft-meta{color:var(--accent-green);font-weight:400;font-size:11.5px;white-space:nowrap;opacity:.85}
+.ft-desc{color:var(--text-muted);font-weight:400}
+.ft-desc::before{content:'— ';color:var(--border)}
+.ft-children{margin-left:16px;border-left:1px solid var(--border);padding-left:10px}
+.ft-node.collapsed > .ft-children{display:none}
+
+/* ---------- netfig svg ---------- */
+.nf-wrap{display:grid;grid-template-columns:1fr;gap:20px;background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:12px;padding:20px;margin:16px 0}
+.nf-cap{font-size:12px;color:var(--text-muted);text-align:center;margin-top:8px}
+.nf-svg{display:flex;justify-content:center}
+.nf-svg svg{max-width:460px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){
+  .grid2{grid-template-columns:1fr}
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.mobile-open{transform:translateX(0)}
+  .main{margin-left:0;padding:30px 18px 70px}
+  .sidebar-toggle{display:flex}
+}
+.footer{margin-top:56px;padding-top:22px;border-top:1px solid var(--border);color:var(--text-muted);font-size:12.5px;text-align:center}
+.callout{border-left:3px solid var(--accent-orange);background:rgba(251,191,36,.06);padding:12px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:13.5px;color:var(--text-secondary)}
+.callout.red{border-left-color:var(--accent-red);background:rgba(248,113,113,.06)}
+.callout.blue{border-left-color:var(--primary);background:rgba(96,165,250,.06)}
+.callout strong{color:var(--text)}
+</style>
+</head>
+<body>
+
+<nav class="sidebar" id="sidebar">
+  <div class="brand">Lift<span>·</span>Splat<span>·</span>Shoot</div>
+  <h2>总览</h2>
+  <a href="#overview">项目概述</a>
+  <a href="#files">文件组织</a>
+  <a href="#deps">模块依赖</a>
+  <a href="#arch">整体架构</a>
+  <h2>子系统深潜</h2>
+  <a href="#data">数据集 <span class="badge">data.py</span></a>
+  <a href="#models">网络 <span class="badge">models.py</span></a>
+  <a href="#lift">Lift · 视锥构建</a>
+  <a href="#splat">Splat · 体素池化</a>
+  <a href="#bev">Shoot · BEV 头</a>
+  <a href="#tools">共享工具 <span class="badge">tools.py</span></a>
+  <a href="#train">训练 <span class="badge">train.py</span></a>
+  <a href="#explore">评估/可视化 <span class="badge">explore.py</span></a>
+  <h2>工程细节</h2>
+  <a href="#pipeline">端到端流水线</a>
+  <a href="#config">配置系统</a>
+  <a href="#traps">已知陷阱</a>
+  <a href="#dev">开发环境</a>
+</nav>
+<button class="sidebar-toggle" id="sbToggle" title="折叠侧边栏">☰</button>
+
+<div class="fs-overlay" id="fsOverlay">
+  <div class="fs-toolbar">
+    <div class="fs-name" id="fsName">Diagram</div>
+    <button class="fs-btn" id="fsZoomIn">+ 放大</button>
+    <button class="fs-btn" id="fsZoomOut">− 缩小</button>
+    <button class="fs-btn" id="fsFit">适应</button>
+    <button class="fs-btn" id="fsOne">1:1</button>
+    <button class="fs-btn" id="fsClose">关闭 ESC</button>
+  </div>
+  <div class="fs-canvas" id="fsCanvas"><div class="fs-mermaid" id="fsMermaid"></div></div>
+  <div class="fs-zoom" id="fsZoom">100%</div>
+</div>
+
+<div class="main" id="main">
+
+  <div class="hero">
+    <h1>Lift · Splat · Shoot</h1>
+    <div class="sub">Encoding Images From Arbitrary Camera Rigs by Implicitly Unprojecting to 3D — NVIDIA ECCV 2020 参考实现。多相机图像 → 逐像素深度分布 → 特征视锥（lift）→ 栅格化到自车 BEV 网格（splat）→ 车辆分割（shoot）。</div>
+    <div class="stats">
+      <div class="stat"><div class="num">6</div><div class="lbl">Python 文件</div></div>
+      <div class="stat"><div class="num">~1,400</div><div class="lbl">代码行数</div></div>
+      <div class="stat"><div class="num">5</div><div class="lbl">CLI 入口</div></div>
+      <div class="stat"><div class="num">200×200</div><div class="lbl">BEV 网格</div></div>
+      <div class="stat"><div class="num">41</div><div class="lbl">深度 bin</div></div>
+    </div>
+  </div>
+
+  <div class="section" id="overview">
+    <h2>项目概述</h2>
+    <p class="lead">这是一个极简的参考实现：没有 <code>requirements.txt</code>、没有 <code>setup.py</code>、没有测试套件。整个数据流都收在 <code>src/</code> 下的 5 个模块里，入口统一由 <code>main.py</code> 通过 <code>fire</code> 分发。</p>
+    <p>核心思路是用一个可微的"隐式反投影"替代显式深度估计：网络为每个相机、每个像素预测一个离散深度分布（41 个 bin），把 64 维上下文特征与深度分布做外积，得到每台相机的特征视锥；所有视锥的 3D 点被投影到统一的 BEV 栅格并做求和池化；最后用一个截断 ResNet18 头输出 BEV 车辆分割。</p>
+    <div class="grid2">
+      <div class="card">
+        <h4 style="margin-top:0;color:var(--accent-cyan)">▸ Lift（提升）</h4>
+        <p style="margin:0;font-size:13.5px">每台相机独立预测 <code>D=41</code> 个深度 bin 的 softmax 分布，与 <code>C=64</code> 维图像上下文做外积 → 特征视锥 <code>B·N×D×8×22×64</code>。</p>
+      </div>
+      <div class="card">
+        <h4 style="margin-top:0;color:var(--accent-green)">▸ Splat（泼溅）</h4>
+        <p style="margin:0;font-size:13.5px">用相机内外参把视锥点映射到自车坐标系，离散化到 <code>200×200</code>、0.5 m 的 BEV 栅格，<code>QuickCumsum</code> 求和池化。</p>
+      </div>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0;color:var(--accent-orange)">▸ Shoot（投射）</h4>
+      <p style="margin:0;font-size:13.5px">论文里的 "shoot" 指把模板轨迹投射进 BEV 代价图做运动规划；<strong>本仓库只实现了 BEV 车辆分割</strong>（<code>outC=1</code>），不包含 shoot / 规划部分。</p>
+    </div>
+  </div>
+
+  <div class="section" id="files">
+    <h2>文件组织</h2>
+    <p class="lead">全部业务代码集中在 <code>src/</code>。展开 <code>src/</code> 看各模块职责。</p>
+    <div class="filetree">
+      <div class="ft-node">
+        <div class="ft-row has-children"><span class="ft-arrow">▼</span><span class="ft-name">lift-splat-shoot-master/</span><span class="ft-desc">仓库根</span></div>
+        <div class="ft-children">
+          <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">main.py</span><span class="ft-meta">19 行</span><span class="ft-desc">fire 分发 5 个 CLI 入口</span></div></div>
+          <div class="ft-node">
+            <div class="ft-row has-children"><span class="ft-arrow">▼</span><span class="ft-name">src/</span><span class="ft-meta">(5 模块)</span></div>
+            <div class="ft-children">
+              <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">data.py</span><span class="ft-meta">267 行</span><span class="ft-desc">nuScenes 数据集、增强、BEV GT</span></div></div>
+              <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">models.py</span><span class="ft-meta">259 行</span><span class="ft-desc">CamEncode / BevEncode / LiftSplatShoot</span></div></div>
+              <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">tools.py</span><span class="ft-meta">376 行</span><span class="ft-desc">几何、池化、损失、IO、地图绘制</span></div></div>
+              <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">train.py</span><span class="ft-meta">120 行</span><span class="ft-desc">训练循环 + checkpoint</span></div></div>
+              <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">explore.py</span><span class="ft-meta">363 行</span><span class="ft-desc">评估、可视化、一致性检查</span></div></div>
+              <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">__init__.py</span><span class="ft-meta">6 行</span><span class="ft-desc">导出 explore / train</span></div></div>
+            </div>
+          </div>
+          <div class="ft-node collapsed">
+            <div class="ft-row has-children"><span class="ft-arrow">▼</span><span class="ft-name">.vscode/</span><span class="ft-desc">调试配置</span></div>
+            <div class="ft-children">
+              <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">launch.json</span><span class="ft-desc">5 个调试任务 + 3 个输入变量</span></div></div>
+              <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">settings.json</span><span class="ft-desc">conda 解释器 lss 环境</span></div></div>
+            </div>
+          </div>
+          <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">imgs/</span><span class="ft-desc">README 用的 eval.gif / check.gif</span></div></div>
+          <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">CLAUDE.md</span><span class="ft-desc">仓库级架构速查（中文）</span></div></div>
+          <div class="ft-node ft-leaf"><div class="ft-row"><span class="ft-arrow">▶</span><span class="ft-name">README.md</span><span class="ft-desc">论文引用、数据准备、命令</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="deps">
+    <h2>模块依赖</h2>
+    <p class="lead">依赖是单向的，没有循环：<code>main</code> → <code>train/explore</code> → <code>models/data</code> → <code>tools</code>。</p>
+    <div class="diagram-viewer" data-title="模块依赖图">
+      <div class="diagram-canvas"><div class="mermaid">
+graph TD
+  MAIN["main.py<br/>fire 分发"] --> TRAIN["train.py<br/>训练循环"]
+  MAIN --> EXPLORE["explore.py<br/>评估 / 可视化 / 检查"]
+  TRAIN --> MODELS["models.py<br/>网络定义"]
+  TRAIN --> DATA["data.py<br/>数据集"]
+  TRAIN --> TOOLS["tools.py<br/>共享数学 / IO"]
+  EXPLORE --> MODELS
+  EXPLORE --> DATA
+  EXPLORE --> TOOLS
+  MODELS --> TOOLS
+  DATA --> TOOLS
+  TOOLS --> EXT["外部依赖<br/>torch · efficientnet<br/>nuscenes-devkit · cv2"]
+  style MAIN fill:#162032,stroke:#60a5fa,color:#e2e8f0
+  style TRAIN fill:#13261e,stroke:#34d399,color:#e2e8f0
+  style EXPLORE fill:#13261e,stroke:#34d399,color:#e2e8f0
+  style MODELS fill:#1e0d2a,stroke:#a78bfa,color:#e2e8f0
+  style DATA fill:#2a250d,stroke:#fbbf24,color:#e2e8f0
+  style TOOLS fill:#0d1a2a,stroke:#22d3ee,color:#e2e8f0
+  style EXT fill:#2a1a0d,stroke:#f97316,color:#e2e8f0
+      </div></div>
+    </div>
+  </div>
+
+  <div class="section" id="arch">
+    <h2>整体架构 · 端到端数据流</h2>
+    <p class="lead">这是最重要的一张图：从 nuScenes 原始数据到 BEV 分割 logit 的完整前向路径。</p>
+    <div class="diagram-viewer" data-title="端到端数据流（训练 / 推理共用的 forward）">
+      <div class="diagram-canvas"><div class="mermaid">
+graph LR
+  subgraph DS["data.py · 数据集"]
+    A1["nuScenes 图像<br/>+ 增强"] --> A3["imgs · post_rots/trans"]
+    A4["标注框"] --> A5["binimgs GT"]
+  end
+  subgraph NET["models.py · LiftSplatShoot"]
+    B1["CamEncode"] --> B4["lift 视锥"]
+    B2["get_geometry"] --> B5["voxel_pooling"]
+    B4 --> B5
+    B5 --> B6["BevEncode"]
+    B6 --> B7["BEV logit"]
+  end
+  A3 --> B1
+  A1 --> B2
+  B7 --> L["SimpleLoss"]
+  A5 --> L
+  style DS fill:#2a250d,stroke:#fbbf24,color:#e2e8f0
+  style NET fill:#1e0d2a,stroke:#a78bfa,color:#e2e8f0
+  style L fill:#2a0d0d,stroke:#f87171,color:#e2e8f0
+      </div></div>
+    </div>
+
+    <div class="diagram-viewer" data-title="张量形状变化（一次前向）">
+      <div class="diagram-canvas"><div class="mermaid">
+graph TD
+  T0["图像<br/>B×N×3×128×352"] --> T1["CamEncode<br/>B·N×105×8×22"]
+  T1 --> T2["切分<br/>depth 41 · context 64"]
+  T2 --> T3["外积<br/>B×N×41×8×22×64"]
+  F0["frustum<br/>41×8×22×3"] --> G0["get_geometry<br/>B×N×41×8×22×3"]
+  G0 --> P0["voxel_pooling"]
+  T3 --> P0
+  P0 --> P1["B×64×1×200×200"]
+  P1 --> P2["折叠 Z → B×64×200×200"]
+  P2 --> P3["BevEncode"]
+  P3 --> P4["B×1×200×200<br/>分割 logit"]
+  style T0 fill:#162032,stroke:#60a5fa,color:#e2e8f0
+  style P4 fill:#2a1a0d,stroke:#f97316,color:#e2e8f0
+      </div></div>
+    </div>
+  </div>
+
+  <div class="section" id="data">
+    <h2>子系统深潜 · 数据集</h2>
+    <div class="diagram-viewer" data-title="data.py 类层次与样本构建">
+      <div class="diagram-canvas"><div class="mermaid">
+graph TB
+  BASE["NuscData<br/>torch.utils.data.Dataset"]
+  BASE --> SUBS["两个具体解析器<br/>compile_data 的 parser_name 选择"]
+  SUBS --> SEG["SegmentationData<br/>返回 7 元组"]
+  SUBS --> VIZ["VizData<br/>返回 8 元组（多 lidar）"]
+  BASE --> M["核心方法"]
+  M --> M1["prepro · fix_nuscenes_formatting<br/>样本枚举 / 路径修正"]
+  M --> M2["choose_cams · sample_augmentation<br/>选相机 / 每相机独立增强"]
+  M --> M3["get_image_data · get_binimg<br/>图像+内外参 / 标注框→BEV GT"]
+  style SUBS fill:#13261e,stroke:#34d399,color:#e2e8f0
+  style M fill:#0d1a2a,stroke:#22d3ee,color:#e2e8f0
+  style BASE fill:#162032,stroke:#60a5fa,color:#e2e8f0
+  style SEG fill:#13261e,stroke:#34d399,color:#e2e8f0
+  style VIZ fill:#0d1a2a,stroke:#22d3ee,color:#e2e8f0
+      </div></div>
+    </div>
+
+    <details class="detail-card" open>
+      <summary><span class="tag tag-orange">DATA</span> NuscData —— 数据加载基类</summary>
+      <div class="detail-body">
+        <table class="data-table">
+          <tr><th style="width:130px">条目</th><th>内容</th></tr>
+          <tr><td style="font-weight:600;color:var(--text)">入口类</td><td><code>NuscData</code>（继承 <code>torch.utils.data.Dataset</code>）</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">输入</td><td>nuScenes 根目录（<code>{dataroot}/{version}</code>）、训练/验证标志、<code>data_aug_conf</code>、<code>grid_conf</code></td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">输出</td><td>
+            <span class="tag tag-green">SegmentationData</span> <code>imgs, rots, trans, intrins, post_rots, post_trans, binimgs</code><br>
+            <span class="tag tag-cyan">VizData</span> 上述 7 项 + <code>lidar_data</code>（共 8 项）
+          </td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">损失</td><td>无（纯数据层）</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">关键参数</td><td><code>Ncams=5</code>（从 6 个相机随机选）、<code>nsweeps=3</code>（lidar 累积帧数）、<code>min_distance=2.2</code>（lidar 去近点）</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">特殊机制</td><td>每个相机<strong>独立</strong>做数据增强（各自采样 resize/crop/flip/rotate），但每台相机都配套计算 <code>post_rots</code>/<code>post_trans</code>，因此几何一致性不受影响</td></tr>
+        </table>
+        <div class="callout blue"><strong>元组顺序是硬编码的。</strong> 所有 loader 消费者（<code>train</code>、<code>get_val_info</code>、<code>lidar_check</code> …）都按固定顺序解包；<code>VizData</code> 多一项 <code>lidar_data</code>，长度错了整条流水线会崩。</div>
+      </div>
+    </details>
+
+    <details class="detail-card">
+      <summary><span class="tag tag-orange">DATA</span> 增强与 GT 生成细节</summary>
+      <div class="detail-body">
+        <h4>sample_augmentation()（data.py:96）</h4>
+        <ul>
+          <li><strong>训练</strong>：<code>resize ~ U(0.193, 0.225)</code>，<code>crop_h</code> 由 <code>bot_pct_lim</code> 随机决定，<code>crop_w</code> 随机、随机水平翻转、<code>rotate ~ U(−5.4°, 5.4°)</code></li>
+          <li><strong>验证</strong>：使用确定性 resize（<code>max(fH/H, fW/W)</code>）、居中裁剪、不翻转、不旋转</li>
+        </ul>
+        <h4>img_transform()（tools.py:120）</h4>
+        <p>把图像与后处理仿射矩阵 <code>post_rot</code>/<code>post_trans</code> 一起更新：resize → crop → flip → rotate，逐步左乘对应的 3×3 齐次变换。在 <code>get_geometry</code> 中会被<strong>逆变换</strong>抵消掉，所以增强不影响 3D 投影。</p>
+        <h4>get_binimg()（data.py:171）</h4>
+        <p>对每个 <code>vehicle.*</code> 标注：取 <code>bottom_corners()[:2]</code> → 变换到自车坐标系 → 量化到栅格 → <strong>交换两轴</strong> <code>pts[:, [1,0]] = pts[:, [0,1]]</code> → <code>cv2.fillPoly</code> 填充。这个轴交换是后文"轴序陷阱"的一部分。</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="section" id="models">
+    <h2>子系统深潜 · 网络</h2>
+    <p class="lead"><code>models.py</code> 有三个 <code>nn.Module</code>：<code>Up</code>（U-Net 上采样块）、<code>CamEncode</code>（逐相机特征 + 深度）、<code>BevEncode</code>（BEV 分割头），外加顶层组合类 <code>LiftSplatShoot</code>。</p>
+
+    <div class="diagram-viewer" data-title="models.py 类结构">
+      <div class="diagram-canvas"><div class="mermaid">
+graph TD
+  LSS["LiftSplatShoot<br/>顶层组合"] --> CE["CamEncode<br/>EfficientNet-B0"]
+  LSS --> BE["BevEncode<br/>截断 ResNet18"]
+  LSS --> GEO["get_geometry<br/>frustum → 自车坐标"]
+  LSS --> VP["voxel_pooling<br/>QuickCumsum"]
+  CE --> UP1["Up(320+112, 512)"]
+  BE --> UP2["Up(64+256, 256, ×4)"]
+  UP1 --> UP["Up 通用<br/>Upsample + 2×Conv-BN-ReLU"]
+  UP2 --> UP
+  style LSS fill:#162032,stroke:#60a5fa,color:#e2e8f0
+  style CE fill:#1e0d2a,stroke:#a78bfa,color:#e2e8f0
+  style BE fill:#13261e,stroke:#34d399,color:#e2e8f0
+  style UP fill:#2a250d,stroke:#fbbf24,color:#e2e8f0
+      </div></div>
+    </div>
+
+    <h3 id="lift">Lift · CamEncode 特征视锥构建</h3>
+    <div class="nf-wrap">
+      <div class="nf-svg">
+        <svg viewBox="0 0 420 586" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:420px;height:auto">
+<defs>
+<marker id="cama" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5a6478"/></marker>
+<marker id="camr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00e5ff"/></marker>
+</defs>
+<text x="210" y="22" fill="#8b95a8" font-size="12" font-family="-apple-system,sans-serif" text-anchor="middle">CamEncode — 特征视锥构建（自下而上）</text>
+<line x1="210" y1="500" x2="210" y2="462" stroke="#5a6478" stroke-width="1.5" marker-end="url(#cama)"/>
+<line x1="210" y1="414" x2="210" y2="376" stroke="#5a6478" stroke-width="1.5" marker-end="url(#cama)"/>
+<line x1="210" y1="328" x2="210" y2="290" stroke="#5a6478" stroke-width="1.5" marker-end="url(#cama)"/>
+<line x1="210" y1="242" x2="210" y2="204" stroke="#5a6478" stroke-width="1.5" marker-end="url(#cama)"/>
+<line x1="210" y1="156" x2="210" y2="118" stroke="#5a6478" stroke-width="1.5" marker-end="url(#cama)"/>
+<g class="bx"><rect x="60" y="500" width="300" height="46" rx="8" fill="#162032" stroke="#60a5fa" stroke-width="1.4"/>
+<text x="210" y="520.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">输入图像</text>
+<text x="210" y="534.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">B·N×3×128×352</text>
+</g>
+<g class="bx"><rect x="60" y="414" width="300" height="46" rx="8" fill="#1e0d2a" stroke="#a78bfa" stroke-width="1.4"/>
+<text x="210" y="434.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">EfficientNet-B0 Stem + Blocks</text>
+<text x="210" y="448.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">手动抽取 reduction_4 / reduction_5</text>
+</g>
+<g class="bx"><rect x="60" y="328" width="300" height="46" rx="8" fill="#2a250d" stroke="#fbbf24" stroke-width="1.4"/>
+<text x="210" y="348.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">Up1 融合模块</text>
+<text x="210" y="362.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">upsample + concat → 512 通道</text>
+</g>
+<g class="bx"><rect x="60" y="242" width="300" height="46" rx="8" fill="#2a250d" stroke="#fbbf24" stroke-width="1.4"/>
+<text x="210" y="262.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">depthnet 1×1 Conv</text>
+<text x="210" y="276.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">512 → D+C = 41+64 = 105</text>
+</g>
+<g class="bx"><rect x="60" y="156" width="300" height="46" rx="8" fill="#161822" stroke="#5a6478" stroke-width="1.4"/>
+<text x="210" y="176.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">通道切分</text>
+<text x="210" y="190.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">前 41 = 深度 logit · 后 64 = 上下文</text>
+</g>
+<g class="bx"><rect x="60" y="70" width="300" height="46" rx="8" fill="#2a1a0d" stroke="#f97316" stroke-width="1.4"/>
+<text x="210" y="90.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">softmax ⊗ context 外积</text>
+<text x="210" y="104.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">→ 特征视锥 B·N×D×8×22×64</text>
+</g>
+</svg>
+      </div>
+      <div class="nf-cap">CamEncode 内部逐层结构（自下而上）。依赖 EfficientNet 私有成员 <code>_blocks</code>/<code>_swish</code>/<code>_bn0</code>/<code>_conv_stem</code>/<code>_global_params</code>，因此 <code>efficientnet_pytorch</code> 锁 0.7.0。</div>
+    </div>
+    <details class="detail-card" open>
+      <summary><span class="tag tag-purple">LIFT</span> CamEncode</summary>
+      <div class="detail-body">
+        <table class="data-table">
+          <tr><th style="width:130px">条目</th><th>内容</th></tr>
+          <tr><td style="font-weight:600;color:var(--text)">入口类</td><td><code>CamEncode(D, C, downsample)</code> — models.py:37</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">输入</td><td><code>x</code>: <code>B·N×3×128×352</code></td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">输出</td><td><code>B×N×D×8×22×C</code>（<code>D=41</code>, <code>C=64</code>），即特征视锥</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">损失</td><td>无独立损失，随整个网络端到端训练</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">关键参数</td><td><code>D=41</code>（来自 dbound）、<code>C=64</code>（camC）、<code>downsample=16</code></td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">特殊机制</td><td>
+            ① 手动抽取 EfficientNet 的 <code>reduction_4</code> / <code>reduction_5</code> 特征图，<code>up1</code> 融合（<code>320+112 → 512</code>）<br>
+            ② <code>depthnet</code> 是 1×1 卷积，输出 <code>D+C=105</code> 通道<br>
+            ③ lift 操作 = <code>depth.unsqueeze(1) * context.unsqueeze(2)</code>（外积），把每个像素的 64 维特征"铺"到 41 个深度 bin 上
+          </td></tr>
+        </table>
+      </div>
+    </details>
+
+    <h3 id="splat">Splat · 几何映射 + 体素池化</h3>
+    <div class="nf-wrap">
+      <div class="nf-svg">
+        <svg viewBox="0 0 420 586" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:420px;height:auto">
+<defs>
+<marker id="spla" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5a6478"/></marker>
+<marker id="splr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00e5ff"/></marker>
+</defs>
+<text x="210" y="22" fill="#8b95a8" font-size="12" font-family="-apple-system,sans-serif" text-anchor="middle">voxel_pooling — 视锥栅格化到 BEV</text>
+<line x1="210" y1="500" x2="210" y2="462" stroke="#5a6478" stroke-width="1.5" marker-end="url(#spla)"/>
+<line x1="210" y1="414" x2="210" y2="376" stroke="#5a6478" stroke-width="1.5" marker-end="url(#spla)"/>
+<line x1="210" y1="328" x2="210" y2="290" stroke="#5a6478" stroke-width="1.5" marker-end="url(#spla)"/>
+<line x1="210" y1="242" x2="210" y2="204" stroke="#5a6478" stroke-width="1.5" marker-end="url(#spla)"/>
+<line x1="210" y1="156" x2="210" y2="118" stroke="#5a6478" stroke-width="1.5" marker-end="url(#spla)"/>
+<g class="bx"><rect x="60" y="500" width="300" height="46" rx="8" fill="#0d1a2a" stroke="#22d3ee" stroke-width="1.4"/>
+<text x="210" y="520.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">geom 自车 3D 点</text>
+<text x="210" y="534.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">B×N×D×8×22×3</text>
+</g>
+<g class="bx"><rect x="60" y="414" width="300" height="46" rx="8" fill="#2a250d" stroke="#fbbf24" stroke-width="1.4"/>
+<text x="210" y="434.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">离散化到网格</text>
+<text x="210" y="448.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">(geom-(bx-dx/2))/dx → long</text>
+</g>
+<g class="bx"><rect x="60" y="328" width="300" height="46" rx="8" fill="#2a0d0d" stroke="#f87171" stroke-width="1.4"/>
+<text x="210" y="348.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">过滤越界点</text>
+<text x="210" y="362.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">kept mask 剔除 box 外点</text>
+</g>
+<g class="bx"><rect x="60" y="242" width="300" height="46" rx="8" fill="#2a250d" stroke="#fbbf24" stroke-width="1.4"/>
+<text x="210" y="262.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">线性 rank 排序</text>
+<text x="210" y="276.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">ranks.argsort() 同体素相邻</text>
+</g>
+<g class="bx"><rect x="60" y="156" width="300" height="46" rx="8" fill="#13261e" stroke="#34d399" stroke-width="1.4"/>
+<text x="210" y="176.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">QuickCumsum 求和池化</text>
+<text x="210" y="190.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">自定义 autograd · cumsum trick</text>
+</g>
+<g class="bx"><rect x="60" y="70" width="300" height="46" rx="8" fill="#0d1a2a" stroke="#22d3ee" stroke-width="1.4"/>
+<text x="210" y="90.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">griddify + 折叠 Z</text>
+<text x="210" y="104.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">B×C×Z×X×Y → B×64×200×200</text>
+</g>
+</svg>
+      </div>
+      <div class="nf-cap">voxel_pooling 内部步骤（自下而上）。<code>QuickCumsum</code> 是自定义 autograd Function，等价于 <code>cumsum_trick</code> 的可微版本。</div>
+    </div>
+    <details class="detail-card">
+      <summary><span class="tag tag-cyan">SPLAT</span> get_geometry + voxel_pooling</summary>
+      <div class="detail-body">
+        <h4>get_geometry()（models.py:166）</h4>
+        <p>对 <code>create_frustum()</code> 构建的 <code>D×8×22×3</code> 射线网格：先减去 <code>post_trans</code>、乘 <code>post_rots</code> 的逆（抵消图像增强），再补齐次坐标做透视除法，然后乘 <code>rots @ intrins.inverse()</code>，最后加 <code>trans</code>，得到自车坐标系下的 3D 点 <code>B×N×D×8×22×3</code>。</p>
+        <table class="data-table">
+          <tr><th style="width:130px">条目</th><th>内容</th></tr>
+          <tr><td style="font-weight:600;color:var(--text)">入口</td><td><code>LiftSplatShoot.get_geometry</code> / <code>voxel_pooling</code> — models.py:166 / 200</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">输入</td><td><code>geom</code>: <code>B×N×41×8×22×3</code>；<code>x</code>: <code>B×N×41×8×22×64</code></td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">输出</td><td><code>B×64×200×200</code>（折叠 Z 后）</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">关键参数</td><td><code>dx</code> 格子尺寸、<code>bx</code> 首格中心、<code>nx</code> 格子数（都由 <code>gen_dx_bx</code> 从 <code>grid_conf</code> 推导）</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">特殊机制</td><td>
+            ① 越界点过滤：<code>0 ≤ idx &lt; nx</code> 的 mask<br>
+            ② 线性 rank 编码 <code>x*nx1*nx2*B + y*nx2*B + z*B + batch</code>，<code>argsort</code> 让同一体素的点连续<br>
+            ③ <code>QuickCumsum</code> 求和池化（<code>use_quickcumsum=False</code> 时退化为 <code>cumsum_trick</code>）<br>
+            ④ <code>griddify</code> 到 <code>B×C×Z×X×Y</code>，再 <code>unbind(dim=2)</code> 把 Z 折进通道
+          </td></tr>
+        </table>
+      </div>
+    </details>
+
+    <h3 id="bev">Shoot · BevEncode 分割头</h3>
+    <div class="nf-wrap">
+      <div class="nf-svg">
+        <svg viewBox="0 0 420 758" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:420px;height:auto">
+<defs>
+<marker id="beva" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5a6478"/></marker>
+<marker id="bevr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00e5ff"/></marker>
+</defs>
+<text x="210" y="22" fill="#8b95a8" font-size="12" font-family="-apple-system,sans-serif" text-anchor="middle">BevEncode — BEV 分割头</text>
+<line x1="210" y1="672" x2="210" y2="634" stroke="#5a6478" stroke-width="1.5" marker-end="url(#beva)"/>
+<line x1="210" y1="586" x2="210" y2="548" stroke="#5a6478" stroke-width="1.5" marker-end="url(#beva)"/>
+<line x1="210" y1="500" x2="210" y2="462" stroke="#5a6478" stroke-width="1.5" marker-end="url(#beva)"/>
+<line x1="210" y1="414" x2="210" y2="376" stroke="#5a6478" stroke-width="1.5" marker-end="url(#beva)"/>
+<line x1="210" y1="328" x2="210" y2="290" stroke="#5a6478" stroke-width="1.5" marker-end="url(#beva)"/>
+<line x1="210" y1="242" x2="210" y2="204" stroke="#5a6478" stroke-width="1.5" marker-end="url(#beva)"/>
+<line x1="210" y1="156" x2="210" y2="118" stroke="#5a6478" stroke-width="1.5" marker-end="url(#beva)"/>
+<g class="bx"><rect x="60" y="672" width="300" height="46" rx="8" fill="#162032" stroke="#60a5fa" stroke-width="1.4"/>
+<text x="210" y="692.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">BEV 特征输入</text>
+<text x="210" y="706.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">B×64×200×200</text>
+</g>
+<g class="bx"><rect x="60" y="586" width="300" height="46" rx="8" fill="#2a250d" stroke="#fbbf24" stroke-width="1.4"/>
+<text x="210" y="606.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">conv1 7×7 stride2</text>
+<text x="210" y="620.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">64 → 64 · 100×100</text>
+</g>
+<g class="bx"><rect x="60" y="500" width="300" height="46" rx="8" fill="#1e0d2a" stroke="#a78bfa" stroke-width="1.4"/>
+<text x="210" y="520.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">layer1 (ResNet18)</text>
+<text x="210" y="534.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">64 → 64</text>
+</g>
+<g class="bx"><rect x="60" y="414" width="300" height="46" rx="8" fill="#1e0d2a" stroke="#a78bfa" stroke-width="1.4"/>
+<text x="210" y="434.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">layer2 (ResNet18)</text>
+<text x="210" y="448.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">64 → 128</text>
+</g>
+<g class="bx"><rect x="60" y="328" width="300" height="46" rx="8" fill="#1e0d2a" stroke="#a78bfa" stroke-width="1.4"/>
+<text x="210" y="348.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">layer3 (ResNet18)</text>
+<text x="210" y="362.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">128 → 256</text>
+</g>
+<g class="bx"><rect x="60" y="242" width="300" height="46" rx="8" fill="#13261e" stroke="#34d399" stroke-width="1.4"/>
+<text x="210" y="262.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">up1 融合 layer3+layer1</text>
+<text x="210" y="276.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">Up(256+64,256) scale=4</text>
+</g>
+<g class="bx"><rect x="60" y="156" width="300" height="46" rx="8" fill="#13261e" stroke="#34d399" stroke-width="1.4"/>
+<text x="210" y="176.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">up2 上采样解码</text>
+<text x="210" y="190.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">Upsample×2 · 256→128→1</text>
+</g>
+<g class="bx"><rect x="60" y="70" width="300" height="46" rx="8" fill="#2a1a0d" stroke="#f97316" stroke-width="1.4"/>
+<text x="210" y="90.0" fill="#e2e8f0" font-size="11.5" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="600">分割 logit 输出</text>
+<text x="210" y="104.5" fill="#8b95a8" font-size="9.5" font-family="-apple-system,sans-serif" text-anchor="middle">B×1×200×200</text>
+</g>
+</svg>
+      </div>
+      <div class="nf-cap">BevEncode 内部结构（自下而上）。复用 torchvision ResNet18 的 <code>bn1/relu/layer1-3</code>，但把 stem 换成单层 7×7 conv。</div>
+    </div>
+    <details class="detail-card">
+      <summary><span class="tag tag-green">BEV</span> BevEncode</summary>
+      <div class="detail-body">
+        <table class="data-table">
+          <tr><th style="width:130px">条目</th><th>内容</th></tr>
+          <tr><td style="font-weight:600;color:var(--text)">入口类</td><td><code>BevEncode(inC, outC)</code> — models.py:90</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">输入</td><td>BEV 特征 <code>B×64×200×200</code></td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">输出</td><td><code>B×outC×200×200</code> 分割 logit（<code>outC=1</code>）</td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">损失</td><td><code>SimpleLoss</code> = <code>BCEWithLogitsLoss(pos_weight=2.13)</code></td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">关键参数</td><td><code>inC=64</code>、<code>outC=1</code>；<code>zero_init_residual=True</code></td></tr>
+          <tr><td style="font-weight:600;color:var(--text)">特殊机制</td><td>复用 ResNet18 的 <code>bn1/relu/layer1/layer2/layer3</code>（丢弃 layer4），<code>up1</code> 用 <code>Up(64+256, 256, scale_factor=4)</code> 上采样并与 layer1 做 U-Net 跳连</td></tr>
+        </table>
+      </div>
+    </details>
+  </div>
+
+  <div class="section" id="tools">
+    <h2>子系统深潜 · 共享工具</h2>
+    <div class="diagram-viewer" data-title="tools.py 功能分组">
+      <div class="diagram-canvas"><div class="mermaid">
+graph LR
+  subgraph GEO["几何"]
+    G1["gen_dx_bx"]
+    G2["ego_to_cam / cam_to_ego"]
+    G3["get_only_in_img_mask"]
+    G4["get_rot"]
+  end
+  subgraph AUG["图像"]
+    A1["img_transform"]
+    A2["normalize_img / denormalize_img"]
+  end
+  subgraph POOL["池化"]
+    P1["cumsum_trick"]
+    P2["QuickCumsum (autograd)"]
+  end
+  subgraph LOSS["损失 / 指标"]
+    L1["SimpleLoss"]
+    L2["get_batch_iou"]
+    L3["get_val_info"]
+  end
+  subgraph IO["数据 / 地图"]
+    I1["get_lidar_data"]
+    I2["get_nusc_maps / plot_nusc_map"]
+    I3["get_local_map / add_ego"]
+  end
+  style GEO fill:#0d1a2a,stroke:#22d3ee,color:#e2e8f0
+  style AUG fill:#162032,stroke:#60a5fa,color:#e2e8f0
+  style POOL fill:#13261e,stroke:#34d399,color:#e2e8f0
+  style LOSS fill:#2a0d0d,stroke:#f87171,color:#e2e8f0
+  style IO fill:#2a250d,stroke:#fbbf24,color:#e2e8f0
+      </div></div>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">gen_dx_bx(xbound, ybound, zbound) — 网格配置的唯一真源</h4>
+      <p>把 <code>[min, max, step]</code> 三元组转成：格子尺寸 <code>dx</code>、首格中心 <code>bx = min + step/2</code>、格子数 <code>nx = (max−min)/step</code>。<code>models.py</code> 和 <code>data.py</code> 中所有 BEV 网格相关代码都走这个函数，确保网络与 GT 的栅格定义一致。</p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">QuickCumsum — 可微的分段求和池化</h4>
+      <p>前向：<code>cumsum</code> → 只保留每个 rank 段的<strong>最后一个</strong>元素 → 差分还原段和。反向：<code>back = cumsum(kept); back[kept] -= 1; val = gradx[back]</code>，把梯度广播回段内所有点。<code>cumsum_trick</code> 功能相同但走 autograd 原生路径，用于 <code>cumsum_check</code> 做数值一致性验证。</p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">SimpleLoss / get_batch_iou</h4>
+      <p><code>SimpleLoss</code> 是带 <code>pos_weight</code> 的 <code>BCEWithLogitsLoss</code>，训练时 <code>pos_weight=2.13</code> 用于补偿车辆像素稀少。<code>get_batch_iou</code> 接收<strong>未过 sigmoid</strong> 的 logits（内部用 <code>&gt; 0</code> 阈值），返回 (intersect, union, IoU)。</p>
+    </div>
+  </div>
+
+  <div class="section" id="train">
+    <h2>子系统深潜 · 训练</h2>
+    <div class="diagram-viewer" data-title="train.py 训练循环">
+      <div class="diagram-canvas"><div class="mermaid">
+graph TD
+  S["train(version, ...)"] --> C1["构造 grid_conf / data_aug_conf"]
+  C1 --> C2["compile_data<br/>trainloader + valloader"]
+  C2 --> C3["compile_model<br/>LiftSplatShoot"]
+  C3 --> C4["Adam(lr=1e-3, wd=1e-7)"]
+  C4 --> C5["SimpleLoss(pos_weight=2.13).cuda"]
+  C5 --> C6["SummaryWriter(logdir)"]
+  C6 --> LOOP["训练循环"]
+  LOOP --> L1["forward → loss → backward"]
+  L1 --> L2["clip_grad_norm_(max=5.0)"]
+  L2 --> L3["opt.step()"]
+  L3 --> L4{"counter % 10 == 0"}
+  L4 -->|是| P1["打印 loss + tensorboard"]
+  L3 --> L5{"counter % 50 == 0"}
+  L5 -->|是| P2["记录 train/iou + step_time"]
+  L3 --> L6{"counter % val_step == 0"}
+  L6 -->|是| P3["get_val_info + 保存 checkpoint"]
+  style S fill:#162032,stroke:#60a5fa,color:#e2e8f0
+  style LOOP fill:#13261e,stroke:#34d399,color:#e2e8f0
+      </div></div>
+    </div>
+    <table class="data-table">
+      <tr><th style="width:150px">超参数</th><th>默认值</th><th>说明</th></tr>
+      <tr><td><code>nepochs</code></td><td>10000</td><td>外层 epoch 数</td></tr>
+      <tr><td><code>bsz</code></td><td>4</td><td>batch size</td></tr>
+      <tr><td><code>lr</code> / <code>weight_decay</code></td><td>1e-3 / 1e-7</td><td>Adam</td></tr>
+      <tr><td><code>pos_weight</code></td><td>2.13</td><td>BCE 正样本权重</td></tr>
+      <tr><td><code>max_grad_norm</code></td><td>5.0</td><td>梯度裁剪</td></tr>
+      <tr><td><code>gpuid</code></td><td>1</td><td>默认 1（不是 0！），<code>&lt;0</code> 表示 CPU</td></tr>
+      <tr><td><code>val_step</code></td><td>1000 / 10000</td><td>mini 每 1000 步验证，trainval 每 10000 步</td></tr>
+      <tr><td>checkpoint</td><td><code>logdir/model{counter}.pt</code></td><td>裸 <code>state_dict</code>，不含配置</td></tr>
+    </table>
+  </div>
+
+  <div class="section" id="explore">
+    <h2>子系统深潜 · 评估与可视化</h2>
+    <div class="diagram-viewer" data-title="explore.py 四个入口">
+      <div class="diagram-canvas"><div class="mermaid">
+graph TD
+  E["explore.py"] --> F1["lidar_check<br/>内外参 / 投影自检"]
+  E --> F2["cumsum_check<br/>QuickCumsum vs autograd"]
+  E --> F3["eval_model_iou<br/>验证集 IoU"]
+  E --> F4["viz_model_preds<br/>BEV 预测 + 地图叠加"]
+  F1 --> D1["loader 解包 8 项<br/>VizData"]
+  F2 --> D2["loader 解包 7 项<br/>SegmentationData"]
+  F3 --> D2
+  F4 --> D2
+  style E fill:#162032,stroke:#60a5fa,color:#e2e8f0
+  style F2 fill:#2a0d0d,stroke:#f87171,color:#e2e8f0
+      </div></div>
+    </div>
+    <table class="data-table">
+      <tr><th>函数</th><th>作用</th><th>输出</th></tr>
+      <tr><td><code>lidar_check</code></td><td>把 lidar 点用内外参投到各相机图像 + 画出 lift-splat 的 3D 点云 X-Y 投影</td><td><code>lcheck*.jpg</code></td></tr>
+      <tr><td><code>cumsum_check</code></td><td>分别用 autograd 路径和 QuickCumsum 跑一个 batch，对比 loss 与 <code>depthnet.weight.grad.mean()</code></td><td>终端打印</td></tr>
+      <tr><td><code>eval_model_iou</code></td><td>加载 checkpoint，在验证集上算 loss / IoU</td><td>终端打印</td></tr>
+      <tr><td><code>viz_model_preds</code></td><td>BEV 分割概率图 + 自车框 + nuScenes 地图叠加</td><td><code>eval*.jpg</code></td></tr>
+    </table>
+    <div class="callout"><strong>cumsum_check 是最接近单测的东西。</strong> 修改 <code>voxel_pooling</code> 或 <code>QuickCumsum</code> 之后务必跑它；两行输出应当一致。</div>
+  </div>
+
+  <div class="section" id="pipeline">
+    <h2>端到端流水线</h2>
+    <p class="lead">以 <code>python main.py train mini --dataroot=... --gpuid=0</code> 为例。</p>
+    <div class="pipeline-step"><div class="step-num">1</div><div class="step-content"><div class="step-title">CLI 解析</div><div class="step-desc"><code>main.py</code> 通过 <code>fire.Fire({...})</code> 把子命令映射到 <code>src.train.train</code> / <code>src.explore.*</code>；任意函数参数都能用 <code>--xxx</code> 覆盖。</div></div></div>
+    <div class="pipeline-step"><div class="step-num">2</div><div class="step-content"><div class="step-title">构造配置</div><div class="step-desc"><code>grid_conf</code>（BEV/深度网格）与 <code>data_aug_conf</code>（增强/相机）在函数体内就地组装。</div></div></div>
+    <div class="pipeline-step"><div class="step-num">3</div><div class="step-content"><div class="step-title">加载 nuScenes</div><div class="step-desc"><code>compile_data</code> → <code>NuScenes(dataroot=os.path.join(dataroot, version))</code>。<strong>注意</strong> <code>--dataroot=/data/nuscenes --version=mini</code> 实际期望 <code>/data/nuscenes/mini/v1.0-mini</code>。</div></div></div>
+    <div class="pipeline-step"><div class="step-num">4</div><div class="step-content"><div class="step-title">构建模型</div><div class="step-desc"><code>compile_model(grid_conf, data_aug_conf, outC=1)</code> → <code>LiftSplatShoot</code>，内部创建 frustum、CamEncode、BevEncode。</div></div></div>
+    <div class="pipeline-step"><div class="step-num">5</div><div class="step-content"><div class="step-title">前向 + 损失</div><div class="step-desc">loader 给出 7 元组 → 全部 <code>.to(device)</code> → <code>model(...)</code> → <code>SimpleLoss(preds, binimgs)</code>。</div></div></div>
+    <div class="pipeline-step"><div class="step-num">6</div><div class="step-content"><div class="step-title">反传 + 更新</div><div class="step-desc"><code>loss.backward()</code> → <code>clip_grad_norm_(5.0)</code> → <code>opt.step()</code>。</div></div></div>
+    <div class="pipeline-step"><div class="step-num">7</div><div class="step-content"><div class="step-title">周期记录 / 验证 / 存档</div><div class="step-desc">每 10 步记 loss，每 50 步记 IoU 与步耗时，每 <code>val_step</code> 步跑 <code>get_val_info</code> 并 <code>torch.save(model.state_dict())</code>。</div></div></div>
+  </div>
+
+  <div class="section" id="config">
+    <h2>配置系统</h2>
+    <p class="lead">没有配置文件、没有 Hydra/YAML。所有配置都是函数默认参数，就地组装成两个 dict 后传给 <code>compile_model</code> / <code>compile_data</code>。</p>
+    <table class="data-table">
+      <tr><th style="width:150px">键</th><th>默认值</th><th>推导 / 含义</th></tr>
+      <tr><td><code>xbound</code></td><td><code>[-50, 50, 0.5]</code></td><td>→ 200 格，0.5 m</td></tr>
+      <tr><td><code>ybound</code></td><td><code>[-50, 50, 0.5]</code></td><td>→ 200 格，0.5 m</td></tr>
+      <tr><td><code>zbound</code></td><td><code>[-10, 10, 20]</code></td><td>→ 1 个 Z bin（高度不分层）</td></tr>
+      <tr><td><code>dbound</code></td><td><code>[4, 45, 1]</code></td><td>→ 41 个深度 bin，4–45 m</td></tr>
+      <tr><td><code>H</code> / <code>W</code></td><td>900 / 1600</td><td>原始图像尺寸</td></tr>
+      <tr><td><code>final_dim</code></td><td><code>(128, 352)</code></td><td>网络输入；÷16 → 8×22 特征图</td></tr>
+      <tr><td><code>resize_lim</code></td><td><code>(0.193, 0.225)</code></td><td>训练 resize 范围</td></tr>
+      <tr><td><code>bot_pct_lim</code></td><td><code>(0.0, 0.22)</code></td><td>底部裁剪比例</td></tr>
+      <tr><td><code>rot_lim</code></td><td><code>(-5.4, 5.4)</code></td><td>旋转范围（度）</td></tr>
+      <tr><td><code>rand_flip</code></td><td><code>True</code></td><td>随机水平翻转</td></tr>
+      <tr><td><code>Ncams</code></td><td>5</td><td>训练时从 6 个相机随机选 5 个</td></tr>
+    </table>
+    <div class="callout"><strong>配置重复在五处。</strong> <code>train</code>、<code>lidar_check</code>、<code>cumsum_check</code>、<code>eval_model_iou</code>、<code>viz_model_preds</code> 各自重复声明了一整套默认值。改默认值必须同时改五处，否则评估/可视化构建出的模型会和 checkpoint 形状不匹配。</div>
+    <div class="callout red"><strong>边界必须能被步长整除。</strong> <code>nx</code> 用浮点除法计算后再转 <code>LongTensor</code>，不能整除会静默截断。</div>
+  </div>
+
+  <div class="section" id="traps">
+    <h2>已知陷阱</h2>
+    <table class="data-table">
+      <tr><th style="width:180px">问题</th><th>说明</th></tr>
+      <tr><td><span class="tag tag-red">CPU 模式</span></td><td><code>train</code> 里 <code>SimpleLoss(...).cuda(gpuid)</code>、<code>eval_model_iou</code> 里 <code>SimpleLoss(1.0).cuda(gpuid)</code> —— 即便上方做了 CPU 设备选择，<code>gpuid &lt; 0</code> 依然会报错。</td></tr>
+      <tr><td><span class="tag tag-red">评估 loss ≠ 训练 loss</span></td><td><code>eval_model_iou</code> 把 <code>pos_weight</code> 硬编码为 <code>1.0</code>，而训练用 <code>2.13</code>。评估打印的 loss 不是训练目标。</td></tr>
+      <tr><td><span class="tag tag-orange">checkpoint 与配置强耦合</span></td><td><code>torch.load</code> 恢复裸 <code>state_dict</code>，<code>grid_conf</code>/<code>final_dim</code>/<code>dbound</code>/<code>Ncams</code> 必须与训练时一致，否则形状/几何会静默偏移。</td></tr>
+      <tr><td><span class="tag tag-orange">BEV 轴序转置</span></td><td><code>voxel_pooling</code> 填的是 <code>(Z, X, Y)</code>；绘图代码用 <code>[..., Y, X]</code> 并调用 <code>.T</code>；<code>binimgs</code> 通过交换角点对齐。新增 BEV 代码前先确认约定。</td></tr>
+      <tr><td><span class="tag tag-purple">增强按相机独立</span></td><td><code>sample_augmentation()</code> 在 <code>get_image_data</code> 的相机循环<strong>内部</strong>调用，同一帧的各相机有各自的随机变换。几何不受影响，但别假设共享。</td></tr>
+      <tr><td><span class="tag tag-cyan">efficientnet 版本锁</span></td><td><code>efficientnet_pytorch==0.7.0</code> 必须锁定，因为 <code>get_eff_depth</code> 直接访问私有成员。</td></tr>
+      <tr><td><span class="tag tag-cyan">dataroot 拼接</span></td><td><code>compile_data</code> 传的是 <code>os.path.join(dataroot, version)</code>，所以 dataroot 本身<strong>不含</strong> version 子目录。</td></tr>
+    </table>
+  </div>
+
+  <div class="section" id="dev">
+    <h2>开发环境</h2>
+    <h3>依赖安装（无 requirements.txt）</h3>
+    <pre><code>pip install torch torchvision nuscenes-devkit tensorboardX \
+    efficientnet_pytorch==0.7.0 fire pyquaternion \
+    opencv-python matplotlib tqdm</code></pre>
+    <h3>命令速查</h3>
+    <pre><code># 训练
+python main.py train mini --dataroot=/data/nuscenes --logdir=./runs --gpuid=0
+
+# 评估 IoU
+python main.py eval_model_iou mini --modelf=MODEL --dataroot=/data/nuscenes
+
+# 可视化 BEV 预测
+python main.py viz_model_preds mini --modelf=MODEL --dataroot=ROOT --map_folder=MAP_ROOT
+
+# 投影自检
+python main.py lidar_check mini --dataroot=ROOT --viz_train=False
+
+# 池化一致性检查
+python main.py cumsum_check mini --dataroot=ROOT</code></pre>
+    <h3>VSCode 调试配置</h3>
+    <p><code>.vscode/launch.json</code> 提供 5 个即开即用的调试任务（cumsum_check / train / eval_model_iou / viz_model_preds / lidar_check），以及 3 个 <code>promptString</code> 输入变量（dataroot / modelf / mapfolder），这样切换数据集或 checkpoint 时不必改文件。解释器默认指向 <code>~/miniconda3/envs/lss/bin/python</code>；所有任务都设了 <code>CUDA_LAUNCH_BLOCKING=1</code>，便于定位异步 CUDA 报错。</p>
+    <div class="callout blue"><strong>预训练模型</strong> 在 README 的 Google Drive 链接里，车辆 IoU 论文报告 32.07、本仓库复现 33.03。</div>
+  </div>
+
+  <div class="footer">
+    Lift-Splat-Shoot 架构报告 · 生成于 2026-11-10 · 分析范围：6 个 Python 文件 / ~1,400 行 / 5 个 CLI 入口
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.min.js" integrity="sha384-yQ4mmBBT+vhTAwjFH0toJXNYJ6O4usWnt6EPIdWwrRvx2V/n5lXuDZQwQFeSFydF" crossorigin="anonymous"></script>
+<script>
+mermaid.initialize({
+  startOnLoad:false, theme:'dark',
+  themeVariables:{darkMode:true,primaryColor:'#1e3a5f',primaryTextColor:'#e2e8f0',primaryBorderColor:'#60a5fa',lineColor:'#5a6478',secondaryColor:'#1a1d2e',tertiaryColor:'#161822',fontSize:'13px',background:'#0f1117',mainBkg:'#1a1d2e',nodeBorder:'#3b82f6'},
+  flowchart:{curve:'basis',padding:16,htmlLabels:true,useMaxWidth:true},
+  securityLevel:'loose'
+});
+
+var fsOverlay=document.getElementById('fsOverlay'),fsName=document.getElementById('fsName'),
+    fsCanvas=document.getElementById('fsCanvas'),fsMermaidEl=document.getElementById('fsMermaid'),
+    fsZoom=document.getElementById('fsZoom');
+var fsState={scale:1,panX:0,panY:0};
+
+function fsApplyTransform(){
+  fsMermaidEl.style.transform='translate('+fsState.panX+'px,'+fsState.panY+'px) scale('+fsState.scale+')';
+  fsZoom.textContent=Math.round(fsState.scale*100)+'%';
+}
+
+function initDiagramViewers(){
+  document.querySelectorAll('.diagram-viewer').forEach(function(v){
+    if(v.getAttribute('data-init')==='1'){return;}
+    v.setAttribute('data-init','1');
+    var title=v.getAttribute('data-title')||'Diagram';
+    if(!v.querySelector('.diagram-title')){
+      var bar=document.createElement('div');bar.className='diagram-title';bar.textContent=title;
+      v.insertBefore(bar,v.firstChild);
+    }
+    var canvas=v.querySelector('.diagram-canvas');
+    if(canvas){canvas.addEventListener('click',function(){fsOpen(v,title);});}
+  });
+}
+
+function renderMermaid(){
+  try{
+    var p=mermaid.run({querySelector:'.mermaid'});
+    if(p&&typeof p.then==='function'){p.then(initDiagramViewers).catch(initDiagramViewers);}
+    else{initDiagramViewers();}
+  }catch(e){
+    try{mermaid.init(undefined,document.querySelectorAll('.mermaid'));}catch(e2){}
+    initDiagramViewers();
+  }
+}
+
+function fsOpen(viewer,title){
+  fsName.textContent=title;
+  fsOverlay.classList.add('open');
+  var tries=0;
+  (function waitForSvg(){
+    var svg=viewer.querySelector('.mermaid svg');
+    if(svg){
+      fsMermaidEl.innerHTML='';
+      var rect=svg.getBoundingClientRect();
+      var w=rect.width,h=rect.height;
+      if((!w||!h)&&svg.viewBox&&svg.viewBox.baseVal){w=svg.viewBox.baseVal.width;h=svg.viewBox.baseVal.height;}
+      if(!w||!h){w=900;h=600;}
+      var clone=svg.cloneNode(true);
+      clone.setAttribute('width',w);clone.setAttribute('height',h);
+      clone.style.width=w+'px';clone.style.height=h+'px';
+      clone.style.maxWidth='none';clone.style.display='block';
+      fsMermaidEl.style.width=w+'px';fsMermaidEl.style.height=h+'px';
+      fsMermaidEl.appendChild(clone);
+      setTimeout(fsFitToScreen,40);
+    }else if(tries++<40){
+      setTimeout(waitForSvg,75);
+    }else{
+      fsMermaidEl.innerHTML='<div style="color:#8b95a8;padding:40px">图表正在渲染，请稍候…</div>';
+    }
+  })();
+}
+
+function fsFitToScreen(){
+  var svg=fsMermaidEl.querySelector('svg');
+  if(!svg)return;
+  var sW=parseFloat(fsMermaidEl.style.width)||svg.getBoundingClientRect().width;
+  var sH=parseFloat(fsMermaidEl.style.height)||svg.getBoundingClientRect().height;
+  if(!sW||!sH)return;
+  var cRect=fsCanvas.getBoundingClientRect();
+  var pad=40;
+  var s=Math.min((cRect.width-pad*2)/sW,(cRect.height-pad*2)/sH);
+  if(!isFinite(s)||s<=0)s=1;
+  fsState.scale=s;
+  fsState.panX=(cRect.width-sW*s)/2;
+  fsState.panY=(cRect.height-sH*s)/2;
+  fsApplyTransform();
+}
+
+function fsClose(){fsOverlay.classList.remove('open');}
+
+document.getElementById('fsClose').addEventListener('click',fsClose);
+document.getElementById('fsFit').addEventListener('click',fsFitToScreen);
+document.getElementById('fsOne').addEventListener('click',function(){
+  fsState.scale=1;fsApplyTransform();
+});
+document.getElementById('fsZoomIn').addEventListener('click',function(){
+  fsState.scale*=1.25;fsApplyTransform();
+});
+document.getElementById('fsZoomOut').addEventListener('click',function(){
+  fsState.scale/=1.25;fsApplyTransform();
+});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')fsClose();});
+
+// drag / pan
+var didDrag=false,dragging=false,lastX=0,lastY=0;
+fsCanvas.addEventListener('mousedown',function(e){
+  dragging=true;didDrag=false;lastX=e.clientX;lastY=e.clientY;
+});
+window.addEventListener('mousemove',function(e){
+  if(!dragging)return;
+  var dx=e.clientX-lastX,dy=e.clientY-lastY;
+  if(Math.abs(dx)+Math.abs(dy)>3)didDrag=true;
+  fsState.panX+=dx;fsState.panY+=dy;lastX=e.clientX;lastY=e.clientY;fsApplyTransform();
+});
+window.addEventListener('mouseup',function(){dragging=false;});
+fsCanvas.addEventListener('click',function(e){
+  if(e.target===fsCanvas&&!didDrag)fsClose();
+});
+// wheel zoom
+fsCanvas.addEventListener('wheel',function(e){
+  e.preventDefault();
+  var rect=fsCanvas.getBoundingClientRect();
+  var mx=e.clientX-rect.left,my=e.clientY-rect.top;
+  var factor=e.deltaY<0?1.12:1/1.12;
+  var ns=fsState.scale*factor;
+  fsState.panX=mx-(mx-fsState.panX)*factor;
+  fsState.panY=my-(my-fsState.panY)*factor;
+  fsState.scale=ns;fsApplyTransform();
+},{passive:false});
+// touch
+var touchDist=0;
+fsCanvas.addEventListener('touchstart',function(e){
+  if(e.touches.length===2){
+    touchDist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+  }
+},{passive:true});
+fsCanvas.addEventListener('touchmove',function(e){
+  if(e.touches.length===2){
+    e.preventDefault();
+    var d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+    if(touchDist){fsState.scale*=d/touchDist;fsApplyTransform();}
+    touchDist=d;
+  }
+},{passive:false});
+
+// sidebar toggle
+document.getElementById('sbToggle').addEventListener('click',function(){
+  var sb=document.getElementById('sidebar'),main=document.getElementById('main');
+  if(window.innerWidth<=900){sb.classList.toggle('mobile-open');}
+  else{sb.classList.toggle('hidden');main.classList.toggle('wide');}
+});
+
+// active nav highlight
+var navLinks=Array.prototype.slice.call(document.querySelectorAll('.sidebar a'));
+var sections=navLinks.map(function(a){return document.querySelector(a.getAttribute('href'));}).filter(Boolean);
+function updateActive(){
+  var scrollY=window.scrollY+120,best=null;
+  sections.forEach(function(s){if(s.offsetTop<=scrollY)best=s;});
+  navLinks.forEach(function(a){a.classList.remove('active');});
+  if(best){
+    var link=navLinks.find(function(a){return a.getAttribute('href')==='#'+best.id;});
+    if(link)link.classList.add('active');
+  }
+}
+window.addEventListener('scroll',updateActive);
+updateActive();
+
+// filetree toggle
+document.querySelectorAll('.filetree .ft-row.has-children').forEach(function(row){
+  row.addEventListener('click',function(){row.parentElement.classList.toggle('collapsed');});
+});
+
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',function(){initDiagramViewers();renderMermaid();});
+}else{initDiagramViewers();renderMermaid();}
+</script>
+</body>
+</html>

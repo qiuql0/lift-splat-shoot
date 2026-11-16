@@ -16,7 +16,8 @@ class Up(nn.Module):
     def __init__(self, in_channels, out_channels, scale_factor=2):
         super().__init__()
 
-        self.up = nn.Upsample(scale_factor=scale_factor, mode='bilinear', align_corners=True) # bilinear **只支持 4 维张量 (B,C,H,W) 将H和W放大2倍
+        self.up = nn.Upsample(scale_factor=scale_factor, mode='bilinear',
+                              align_corners=True)
 
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
@@ -29,36 +30,31 @@ class Up(nn.Module):
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
-        x1 = torch.cat([x2, x1], dim=1) # 除了`dim=1`这个通道维度以外，**其余维度 (B,H,W) 必须完全相等* dim=1是channel层
+        x1 = torch.cat([x2, x1], dim=1)
         return self.conv(x1)
 
 
 class CamEncode(nn.Module):
     def __init__(self, D, C, downsample):
         super(CamEncode, self).__init__()
-        self.D = D # 41
-        self.C = C # 64
+        self.D = D
+        self.C = C
 
-        # 加载ImageNet 预训练的 EfficientNet-B0 模型。原生设计目标是图像分类任务
-        # 会加载权重。from_name()就不会加载权重。
-        # EfficientNet 是 Google 2019 年提出的轻量级卷积神经网络，核心思想是**用系统化的复合缩放方法，同时平衡网络深度、宽度和输入分辨率，在精度和计算效率之间取得最优平衡*
-        # 复合缩放策略（Compound Scaling）传统网络要么只加深（ResNet）、要么只加宽（WideResNet）、要么只改输入尺寸。EfficientNet 用一个统一的系数 φ 同时缩放三个维度
-        # 整个系列从 B0 到 B8 共 9 个标准型。**B0**：基线模型，~5.3M 参数，输入 224×224，速度最快。B1~B7：逐步放大，输入尺寸从 240 到 600 递增。B8：标准系列最大，输入 672×672.
-        # 网络具体结构，见最下面。
-        self.trunk = EfficientNet.from_pretrained("efficientnet-b0") 
+        self.trunk = EfficientNet.from_pretrained("efficientnet-b0")
 
         self.up1 = Up(320+112, 512)
-        self.depthnet = nn.Conv2d(512, self.D + self.C, kernel_size=1, padding=0) # 这里代码**没有写 bias=False**，默认`bias=True
+        self.depthnet = nn.Conv2d(512, self.D + self.C, kernel_size=1, padding=0)
+
+    def get_depth_dist(self, x, eps=1e-20):
+        return x.softmax(dim=1)
 
     def get_depth_feat(self, x):
-        x = self.get_eff_depth(x) # x=[B,512,8,22]
+        x = self.get_eff_depth(x)
         # Depth
-        x = self.depthnet(x) # x=[B,105,8,22]
+        x = self.depthnet(x)
 
-        depth = self.get_depth_dist(x[:, :self.D]) # depth=[B,41,8,22】
-        # depth.unsqueeze(1)=[B,1,41,8,22]
-        # x[:, self.D:(self.D + self.C)].unsqueeze(2)=[B,64,1,8,22]
-        new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2) # new_x=[B,64,41,8,22]
+        depth = self.get_depth_dist(x[:, :self.D])
+        new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)
 
         return depth, new_x
 
@@ -67,7 +63,6 @@ class CamEncode(nn.Module):
         endpoints = dict()
 
         # Stem
-        # Swish 是一种平滑的非线性激活函数
         x = self.trunk._swish(self.trunk._bn0(self.trunk._conv_stem(x)))
         prev_x = x
 
@@ -83,12 +78,9 @@ class CamEncode(nn.Module):
 
         # Head
         endpoints['reduction_{}'.format(len(endpoints)+1)] = x
-        x = self.up1(endpoints['reduction_5'], endpoints['reduction_4']) # 320+112-》512
+        x = self.up1(endpoints['reduction_5'], endpoints['reduction_4'])
         return x
 
-    def get_depth_dist(self, x, eps=1e-20):
-        return x.softmax(dim=1)
-    
     def forward(self, x):
         depth, x = self.get_depth_feat(x)
 
@@ -151,49 +143,88 @@ class LiftSplatShoot(nn.Module):
         self.downsample = 16
         self.camC = 64
         self.frustum = self.create_frustum()
-        self.D, _, _, _ = self.frustum.shape #D=41
+        self.D, _, _, _ = self.frustum.shape
         self.camencode = CamEncode(self.D, self.camC, self.downsample)
-        self.bevencode = BevEncode(inC=self.camC, outC=outC) # outC=1
+        self.bevencode = BevEncode(inC=self.camC, outC=outC)
 
         # toggle using QuickCumsum vs. autograd
         self.use_quickcumsum = True
     
     def create_frustum(self):
+        """构造视锥模板：特征图每个像素位置 × D 个候选深度，组成 (u', v', d) 网格。
+
+        只在 __init__ 中调用一次，与样本无关；数据增强和相机标定的差异由 get_geometry 处理。
+        u', v': 增强后网络输入图（final_dim，默认 352x128）上的像素坐标，不是特征图下标
+        d:      沿光轴方向的深度，即相机坐标系的 z（米），不是到相机的直线距离；
+                因此同一个 d 的点组成一个垂直于光轴的平面
+
+        Returns D x H/downsample x W/downsample x 3，默认 41 x 8 x 22 x 3
+        """
         # make grid in image plane
-        ogfH, ogfW = self.data_aug_conf['final_dim'] # ogfH=128,ogfW=352, final_dim=(128, 352),
-        fH, fW = ogfH // self.downsample, ogfW // self.downsample #  self.downsample=16 fH=8 fW=22
-
-        # dbound=[4.0, 45.0, 1.0], `expand` **不会分配新内存**，只是视图。如果后续 in-place 修改，所有广播出来的位置会一起
-        ds = torch.arange(*self.grid_conf['dbound'], dtype=torch.float).view(-1, 1, 1).expand(-1, fH, fW) # ds=[41,8,22] 第一维是等间隔序列，后两维是扩展
-
-        D, _, _ = ds.shape # D=41
-        xs = torch.linspace(0, ogfW - 1, fW, dtype=torch.float).view(1, 1, fW).expand(D, fH, fW) # xs=[41,8,22] 第三维是等间隔序列，前两维是扩展
+        # 网络输入图尺寸 (128, 352)
+        ogfH, ogfW = self.data_aug_conf['final_dim']
+        # 特征图尺寸 (8, 22)，与 CamEncode 输出的 1/16 分辨率一致
+        fH, fW = ogfH // self.downsample, ogfW // self.downsample
+        # 深度：arange(4, 45, 1) -> 4, 5, ..., 44，共 D=41 个（不含 45，取的是每个 bin 的左端点）
+        ds = torch.arange(*self.grid_conf['dbound'], dtype=torch.float).view(-1, 1, 1).expand(-1, fH, fW)
+        # D 同时决定了 CamEncode.depthnet 的输出通道数 D + C，改 dbound 会改变网络结构
+        D, _, _ = ds.shape
+        # u：在 0 ~ 351 上均匀取 22 个点，步长 351/21 ≈ 16.71。首尾贴着图像边缘，
+        #    并不精确落在每个 16x16 块的中心（16j + 7.5），越靠边偏差越大，最多约 7.5 px
+        xs = torch.linspace(0, ogfW - 1, fW, dtype=torch.float).view(1, 1, fW).expand(D, fH, fW)
+        # v：在 0 ~ 127 上均匀取 8 个点，情况同上
         ys = torch.linspace(0, ogfH - 1, fH, dtype=torch.float).view(1, fH, 1).expand(D, fH, fW)
 
         # D x H x W x 3
-        frustum = torch.stack((xs, ys, ds), -1) #frustum=[41,8,22,3]
+        # 最后一维是 (u', v', d)
+        frustum = torch.stack((xs, ys, ds), -1)
+        # 用 Parameter 是为了随 model.to(device) 移到 GPU；它不参与训练，
+        # 但会被存进 state_dict，加载 checkpoint 时会被覆盖成训练时的视锥
         return nn.Parameter(frustum, requires_grad=False)
 
     def get_geometry(self, rots, trans, intrins, post_rots, post_trans):
         """Determine the (x,y,z) locations (in the ego frame)
         of the points in the point cloud.
+
+        N 为相机数。所有入参都来自 NuscData.get_image_data（src/data.py）。
+        rots:       B x N x 3 x 3  相机坐标系 -> 自车坐标系的旋转（来自 calibrated_sensor）
+        trans:      B x N x 3      相机坐标系 -> 自车坐标系的平移，即相机光心在自车坐标系中的位置（米）
+        intrins:    B x N x 3 x 3  原始图像（未做数据增强）的内参 K
+        post_rots:  B x N x 3 x 3  原图像素 -> 增强后像素的线性变换（缩放/翻转/旋转）；
+                                   只有左上角 2x2 有实际内容，深度不受影响
+        post_trans: B x N x 3      同一变换的平移部分（裁剪偏移等）；
+                                   第 3 个分量（深度方向）恒为 0
+
         Returns B x N x D x H/downsample x W/downsample x 3
         """
         B, N, _ = trans.shape
 
         # undo post-transformation
         # B x N x D x H x W x 3
+        # 第 1 步：撤销数据增强。增强是 p' = A·p + b（A = post_rots，b = post_trans），
+        # 反过来就是 p = A⁻¹·(p' − b)：先减平移，再乘逆矩阵，顺序不能反。
+        # 视锥 (D x H x W x 3) 与 view 后的 (B x N x 1 x 1 x 1 x 3) 广播，
+        # 每个相机的所有视锥点都减去该相机自己的平移量
         points = self.frustum - post_trans.view(B, N, 1, 1, 1, 3)
+        # unsqueeze(-1) 把每个点变成 3x1 列向量，以便做矩阵乘法；结果为 B x N x D x H x W x 3 x 1
+        # matmul 的广播只作用于前面的维度，最后两维按矩阵乘法规则计算
         points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1))
 
         # cam_to_ego
+        # 第 2 步：反投影。针孔模型是 d·(u, v, 1)ᵀ = K·p_cam，
+        # 所以先把 (u, v, d) 变成 (u·d, v·d, d)，再乘 K⁻¹ 就得到 p_cam，其 z 分量恰好等于 d
         points = torch.cat((points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
                             points[:, :, :, :, :, 2:3]
                             ), 5)
+        # 第 3 步：相机坐标系 -> 自车坐标系，p_ego = R·p_cam + t = R·K⁻¹·(u·d, v·d, d)ᵀ + t。
+        # 先把 R 和 K⁻¹ 合并成一个矩阵（每个相机只算一次），这样每个点只需做一次 3x3 矩阵乘法
         combine = rots.matmul(torch.inverse(intrins))
+        # squeeze(-1) 去掉列向量的最后一维，变回 B x N x D x H x W x 3
         points = combine.view(B, N, 1, 1, 1, 3, 3).matmul(points).squeeze(-1)
+        # 加上相机光心在自车坐标系中的位置
         points += trans.view(B, N, 1, 1, 1, 3)
 
+        # 每个视锥点在自车坐标系下的 (x, y, z)，单位米
         return points
 
     def get_cam_feats(self, x):
@@ -268,76 +299,3 @@ class LiftSplatShoot(nn.Module):
 
 def compile_model(grid_conf, data_aug_conf, outC):
     return LiftSplatShoot(grid_conf, data_aug_conf, outC)
-
-# ==============================================================
-# EfficientNet-B0 完整结构说明（基线模型）
-# 输入尺寸：224×224 RGB图像；总参数量：~5.3M
-# 整体架构：Stem输入层 → 7个Stage（MBConv堆叠） → Head输出头
-# 核心组件：MBConv倒置残差瓶颈 + SE通道注意力，激活函数为Swish
-# ==============================================================
-
-# -------------------- 0. Stem 输入层 --------------------
-# 操作：3×3卷积(stride=2) + BatchNorm + Swish
-# 输入：[B, 3, 224, 224] 原始RGB图像
-# 输出：[B, 32, 112, 112]，完成第一次2倍下采样，提取底层边缘纹理特征
-
-# -------------------- 1. Stage 1 --------------------
-# 配置：MBConv1，卷积核3×3，带SE注意力，无下采样
-# 模块数量：1个
-# 输入通道：32 → 输出通道：16
-# 扩展倍率：1（MBConv1 = 不做通道升维）
-# 输出分辨率：112×112（对应2倍下采样层级）
-
-# -------------------- 2. Stage 2 --------------------
-# 配置：MBConv6，卷积核3×3，带SE注意力，stride=2下采样
-# 模块数量：2个（仅第1个块下采样，第2个保持分辨率）
-# 输入通道：16 → 输出通道：24
-# 扩展倍率：6（MBConv6 = 通道先放大6倍再卷积）
-# 输出分辨率：56×56（对应4倍下采样层级）
-
-# -------------------- 3. Stage 3 --------------------
-# 配置：MBConv6，卷积核5×5，带SE注意力，stride=2下采样
-# 模块数量：2个（仅第1个块下采样）
-# 输入通道：24 → 输出通道：40
-# 扩展倍率：6
-# 输出分辨率：28×28（对应8倍下采样层级）
-
-# -------------------- 4. Stage 4 --------------------
-# 配置：MBConv6，卷积核3×3，带SE注意力，stride=2下采样
-# 模块数量：3个（仅第1个块下采样）
-# 输入通道：40 → 输出通道：80
-# 扩展倍率：6
-# 输出分辨率：14×14（对应16倍下采样层级）
-
-# -------------------- 5. Stage 5 --------------------
-# 配置：MBConv6，卷积核5×5，带SE注意力，无下采样
-# 模块数量：3个
-# 输入通道：80 → 输出通道：112
-# 扩展倍率：6
-# 输出分辨率：14×14（对应16倍下采样层级）
-
-# -------------------- 6. Stage 6 --------------------
-# 配置：MBConv6，卷积核5×5，带SE注意力，stride=2下采样
-# 模块数量：4个（仅第1个块下采样）
-# 输入通道：112 → 输出通道：192
-# 扩展倍率：6
-# 输出分辨率：7×7（对应32倍下采样层级）
-
-# -------------------- 7. Stage 7 --------------------
-# 配置：MBConv6，卷积核3×3，带SE注意力，无下采样
-# 模块数量：1个
-# 输入通道：192 → 输出通道：320
-# 扩展倍率：6
-# 输出分辨率：7×7（对应32倍下采样层级）
-
-# -------------------- Head 输出头（原生分类任务） --------------------
-# 1. 1×1卷积：通道320 → 1280，配合BatchNorm + Swish
-# 2. 全局平均池化：[B, 1280, 7, 7] → [B, 1280, 1, 1]
-# 3. 全连接层：1280维 → 1000维（ImageNet分类类别数）
-# 注：做分割/深度估计等下游任务时，通常丢弃全连接层，仅用卷积主干提取多尺度特征
-
-# -------------------- 核心模块补充说明 --------------------
-# MBConv：倒置残差瓶颈卷积，完整流程：1×1卷积升维 → 深度可分离卷积 → SE注意力 → 1×1卷积降维 → 残差连接
-# MBConv1/6：后缀数字代表通道扩展倍率，1=不升维，6=卷积前先将通道数放大6倍
-# SE（Squeeze-and-Excitation）：通道注意力机制，全局池化后学习各通道权重，自动强化有效特征、抑制无效特征
-# 下采样规则：每个Stage仅第一个Block可使用stride=2完成2倍下采样，后续Block保持分辨率不变
