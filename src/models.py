@@ -246,10 +246,9 @@ class LiftSplatShoot(nn.Module):
         B, N, C, imH, imW = x.shape
 
         x = x.view(B*N, C, imH, imW)
-        # 输出：x : (B*N, 64, 41, 8, 22)
-        x = self.camencode(x)
-        x = x.view(B, N, self.camC, self.D, imH//self.downsample, imW//self.downsample)
-        x = x.permute(0, 1, 3, 4, 5, 2)
+        x = self.camencode(x) # 输出：x : (B*N, 64, 41, 8, 22)
+        x = x.view(B, N, self.camC, self.D, imH//self.downsample, imW//self.downsample) # (B, N, 64, 41, 8, 22)
+        x = x.permute(0, 1, 3, 4, 5, 2) # (B, N, 41, 8, 22, 64)
 
         return x
 
@@ -298,8 +297,8 @@ class LiftSplatShoot(nn.Module):
         return final
 
     def get_voxels(self, x, rots, trans, intrins, post_rots, post_trans):
-        geom = self.get_geometry(rots, trans, intrins, post_rots, post_trans)
-        x = self.get_cam_feats(x)
+        geom = self.get_geometry(rots, trans, intrins, post_rots, post_trans) # (B, N, 41, 8, 22, 3)
+        x = self.get_cam_feats(x) # 输出：(B, N, 41, 8, 22, 64)
 
         x = self.voxel_pooling(geom, x)
 
