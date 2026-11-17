@@ -73,30 +73,31 @@ def lidar_check(version,
 
     for epoch in range(nepochs):
         for batchi, (imgs, rots, trans, intrins, post_rots, post_trans, pts, binimgs) in enumerate(loader):
+            # imgs: (B, N, 3, 128, 352), pts：(B, 3, 点数)， binimgs：(B, 1, 200, 200)
 
             img_pts = model.get_geometry(rots, trans, intrins, post_rots, post_trans)
+            # img_pts: (B, N, D, H/16, W/16, 3)
 
-            # imgs：B × N × C × H × W
             for si in range(imgs.shape[0]):
                 plt.clf()
                 final_ax = plt.subplot(gs[:, 5:6])
-                for imgi, img in enumerate(imgs[si]):
-                    ego_pts = ego_to_cam(pts[si], rots[si, imgi], trans[si, imgi], intrins[si, imgi])
+                for imgi, img in enumerate(imgs[si]): # imgs[si] ： (N, 3, 128, 352), imgi 是相机组的index
+                    ego_pts = ego_to_cam(pts[si], rots[si, imgi], trans[si, imgi], intrins[si, imgi]) # 将自车坐标系的3d点云变成像素坐标（1600, 900）
                     mask = get_only_in_img_mask(ego_pts, H, W)
-                    plot_pts = post_rots[si, imgi].matmul(ego_pts) + post_trans[si, imgi].unsqueeze(1)
+                    plot_pts = post_rots[si, imgi].matmul(ego_pts) + post_trans[si, imgi].unsqueeze(1) # 施加图像增强变换
 
                     ax = plt.subplot(gs[imgi // 3, imgi % 3])
                     showimg = denormalize_img(img)
                     plt.imshow(showimg)
                     if show_lidar:
-                        plt.scatter(plot_pts[0, mask], plot_pts[1, mask], c=ego_pts[2, mask],
+                        plt.scatter(plot_pts[0, mask], plot_pts[1, mask], c=ego_pts[2, mask], # c=plot_pts[2, mask] 也一样
                                 s=5, alpha=0.1, cmap='jet')
                     # plot_pts = post_rots[si, imgi].matmul(img_pts[si, imgi].view(-1, 3).t()) + post_trans[si, imgi].unsqueeze(1)
                     # plt.scatter(img_pts[:, :, :, 0].view(-1), img_pts[:, :, :, 1].view(-1), s=1)
                     plt.axis('off')
 
-                    plt.sca(final_ax)
-                    plt.plot(img_pts[si, imgi, :, :, :, 0].view(-1), img_pts[si, imgi, :, :, :, 1].view(-1), '.', label=cams[imgi].replace('_', ' '))
+                    plt.sca(final_ax) # plt.sca(final_ax) 切回最右侧的子图（sca 是 set current axes的缩写），再画视锥点
+                    plt.plot(img_pts[si, imgi, :, :, :, 0].view(-1), img_pts[si, imgi, :, :, :, 1].view(-1), '.', label=cams[imgi].replace('_', ' ')) # 画俯视图
                 
                 plt.legend(loc='upper right')
                 final_ax.set_aspect('equal')
@@ -192,6 +193,17 @@ def cumsum_check(version,
         print()
 
 
+#   评估：车辆 IoU 35.7%
+
+#   python main.py eval_model_iou mini --modelf=/home/qianli/data/lss_models/model525000.pt \
+#       --dataroot=/home/qianli/data/nuscenes --gpuid=0
+
+#   结果是 {'loss': 0.096, 'iou': 0.357}，只用了 7 秒。
+
+#   - 这个数字和论文报告的约 33% 在同一水平，说明模型和数据都加载对了
+#   - 但两者不能直接比较：mini 验证集只有 2 个场景、81
+#     个样本，论文用的是完整验证集，样本量差了几十倍，数字波动会很大
+#   - 打印的 loss 是用 pos_weight=1.0 算的，和训练时的 loss 不是一回事，之前讲过
 def eval_model_iou(version,
                 modelf,
                 dataroot='/data/nuscenes',

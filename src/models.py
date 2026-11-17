@@ -242,12 +242,39 @@ class LiftSplatShoot(nn.Module):
 
     def get_cam_feats(self, x):
         """Return B x N x D x H/downsample x W/downsample x C
+
+        这是 Lift 的"抬升"步骤：把每张 2D 特征图展开成 D 个深度层，得到视锥点特征。
+
+        x: B x N x 3 x H x W  网络输入图像（final_dim，默认 128x352），3 为 RGB
+        Returns: B x N x D x H/16 x W/16 x C
+                 每个元素是一个视锥点（D 个深度 × 特征图每个位置）对应的 C 维特征，
+                 默认 4 x 5 x 41 x 8 x 22 x 64
+
+        注意这里的 C 有两层意思，容易混：
+            - 函数开头解包的 C 是输入图像的通道数（3）
+            - 输出的 C 是 self.camC，即特征通道数（64）
         """
+        # 默认 4 x 5 x 3 x 128 x 352
         B, N, C, imH, imW = x.shape
 
+        # 把 batch 和相机两维合并：EfficientNet 对每张图独立处理，
+        # 不关心哪张图属于哪个样本，所以可以当成 20 张图一起过网络（4x5=20）
         x = x.view(B*N, C, imH, imW)
+
+        # CamEncode 内部做三件事：
+        #   ① EfficientNet-B0 提特征，1/16 分辨率，通道 512
+        #   ② depthnet 输出 D+C = 41+64 = 105 个通道
+        #   ③ 前 D 个通道 softmax 成深度分布 depth，后 C 个作为上下文特征；
+        #      new_x = depth.unsqueeze(1) * context.unsqueeze(2) 是外积，
+        #      得到 B*N x C x D x h x w —— 通道维在前，深度被当成一个空间维度
+        # 输出 20 x 64 x 41 x 8 x 22
         x = self.camencode(x) # 输出：x : (B*N, 64, 41, 8, 22)
+        # 拆回 (B, N)，并按照 camC、D 的顺序重新解释维度：64 x 41 x 8 x 22 -> (64, 41, 8, 22)
         x = x.view(B, N, self.camC, self.D, imH//self.downsample, imW//self.downsample) # (B, N, 64, 41, 8, 22)
+        # 把特征通道维 C 挪到最后，得到 4 x 5 x 41 x 8 x 22 x 64
+        # 这样才能和 get_geometry 的输出 (B, N, D, H/16, W/16, 3) 在维度上对齐：
+        # voxel_pooling 会把两者都摊平成 (Nprime, C) 和 (Nprime, 3)，
+        # 摊平后必须逐点一一对应，所以前面几维的顺序必须完全一致
         x = x.permute(0, 1, 3, 4, 5, 2) # (B, N, 41, 8, 22, 64)
 
         return x

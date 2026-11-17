@@ -79,11 +79,32 @@ def get_lidar_data(nusc, sample_rec, nsweeps, min_distance):
 
 def ego_to_cam(points, rot, trans, intrins):
     """Transform points (3 x N) from ego frame into a pinhole camera
+
+    把自车坐标系下的点投影到单个相机的原始图像上，是 LiftSplatShoot.get_geometry 的逆过程
+    （不含数据增强部分）。每一列是一个点，与 nuScenes devkit 的约定一致。
+    points:  3 x N  自车坐标系下的 (x, y, z)，单位米
+    rot:     3 x 3  相机坐标系 -> 自车坐标系的旋转 R（即 get_image_data 返回的 rots 中的一个）
+    trans:   3      相机光心在自车坐标系中的位置 t
+    intrins: 3 x 3  原始图像（1600x900，未做数据增强）的内参 K
+
+    Returns 3 x N，每列为 (u, v, d)：
+        u, v 是原始图像上的像素坐标；若要得到增强后网络输入图上的坐标，
+        还需再做 post_rot·p + post_tran（见 explore.py 中 lidar_check 的用法）
+        d    是相机坐标系的 z，即沿光轴方向的深度
+    注意：相机背后的点（d <= 0）也会被算出坐标，但没有意义（除以负数后会翻转到画面里），
+    需要用 get_only_in_img_mask 过滤
     """
+    # 自车 -> 相机，是 p_ego = R·p_cam + t 的逆：p_cam = Rᵀ·(p_ego − t)，先减平移，再旋转
+    # trans 形状为 (3,)，unsqueeze(1) 变成 (3, 1)，以便广播到 3 x N 的每一列
     points = points - trans.unsqueeze(1)
+    # 旋转矩阵是正交矩阵，逆等于转置，所以用 permute(1, 0) 得到 Rᵀ，无需调用 inverse
     points = rot.permute(1, 0).matmul(points)
 
+    # 透视投影：K·p_cam = (z·u, z·v, z)
     points = intrins.matmul(points)
+    # 前两行除以深度 z，得到像素坐标 (u, v)；第三行保留 z 作为深度 d。
+    # 用 2:3 而不是 2，是为了保留长度为 1 的维度，让 (1, N) 正确广播到 (2, N)。
+    # 这里是原地修改，但 points 已是上面 matmul 生成的新张量，不会改动调用方传入的数据
     points[:2] /= points[2:3]
 
     return points
@@ -171,10 +192,10 @@ normalize_img = torchvision.transforms.Compose((
 ))
 
 
-    # xbound=[-50.0, 50.0, 0.5],
-    # ybound=[-50.0, 50.0, 0.5],
-    # zbound=[-10.0, 10.0, 20.0],
-    # dbound=[4.0, 45.0, 1.0],
+# xbound=[-50.0, 50.0, 0.5],
+# ybound=[-50.0, 50.0, 0.5],
+# zbound=[-10.0, 10.0, 20.0],
+# dbound=[4.0, 45.0, 1.0],
 def gen_dx_bx(xbound, ybound, zbound):
     dx = torch.Tensor([row[2] for row in [xbound, ybound, zbound]])
     bx = torch.Tensor([row[0] + row[2]/2.0 for row in [xbound, ybound, zbound]])

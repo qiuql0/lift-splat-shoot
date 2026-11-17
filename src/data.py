@@ -173,7 +173,7 @@ class NuscData(torch.utils.data.Dataset):
                                 self.nusc.get('sample_data', rec['data']['LIDAR_TOP'])['ego_pose_token'])
         trans = -np.array(egopose['translation'])
         rot = Quaternion(egopose['rotation']).inverse
-        img = np.zeros((self.nx[0], self.nx[1]))
+        img = np.zeros((self.nx[0], self.nx[1])) # 100 * 100
         for tok in rec['anns']:
             inst = self.nusc.get('sample_annotation', tok)
             # add category for lyft
