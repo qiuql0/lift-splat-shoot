@@ -37,8 +37,8 @@ class Up(nn.Module):
 class CamEncode(nn.Module):
     def __init__(self, D, C, downsample):
         super(CamEncode, self).__init__()
-        self.D = D
-        self.C = C
+        self.D = D # 41
+        self.C = C # 64
 
         self.trunk = EfficientNet.from_pretrained("efficientnet-b0")
 
@@ -49,12 +49,12 @@ class CamEncode(nn.Module):
         return x.softmax(dim=1)
 
     def get_depth_feat(self, x):
-        x = self.get_eff_depth(x)
+        x = self.get_eff_depth(x) # 输出：(B*N, 512, 8, 22)
         # Depth
-        x = self.depthnet(x)
+        x = self.depthnet(x) # 输出 (B*N, 105, 8, 22)
 
-        depth = self.get_depth_dist(x[:, :self.D])
-        new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)
+        depth = self.get_depth_dist(x[:, :self.D]) # 输出 (B*N, 41, 8, 22)
+        new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2) # (B*N, 64, 41, 8, 22)
 
         return depth, new_x
 
@@ -62,7 +62,7 @@ class CamEncode(nn.Module):
         # adapted from https://github.com/lukemelas/EfficientNet-PyTorch/blob/master/efficientnet_pytorch/model.py#L231
         endpoints = dict()
 
-        # Stem
+        # Stem stage1 64×176 @ 32
         x = self.trunk._swish(self.trunk._bn0(self.trunk._conv_stem(x)))
         prev_x = x
 
@@ -79,6 +79,19 @@ class CamEncode(nn.Module):
         # Head
         endpoints['reduction_{}'.format(len(endpoints)+1)] = x
         x = self.up1(endpoints['reduction_5'], endpoints['reduction_4'])
+
+        # repeats_per_stage = [1, 2, 2, 3, 3, 4, 1]   # 共 7 个 stage
+        #                     │  │  │  │  │  │  └─ stage8: 1 个 block 4×11  @ 320 reduction_5
+        #                     │  │  │  │  │  └──── stage7: 4 个 block 4×11  @ 192
+        #                     │  │  │  │  └─────── stage6: 3 个 block 8×22  @ 112 reduction_4
+        #                     │  │  │  └────────── stage5: 3 个 block 8×22  @ 80
+        #                     │  │  └───────────── stage4: 2 个 block 16×44 @ 40
+        #                     │  └──────────────── stage3: 2 个 block  32×88 @ 24
+        #                     └─────────────────── stage2: 1 个 block 64×176 @ 16
+
+        # block 总数 = 1+2+2+3+3+4+1 = 16
+
+        # 输出：(B*N, 512, 8, 22)
         return x
 
     def forward(self, x):
@@ -233,6 +246,7 @@ class LiftSplatShoot(nn.Module):
         B, N, C, imH, imW = x.shape
 
         x = x.view(B*N, C, imH, imW)
+        # 输出：x : (B*N, 64, 41, 8, 22)
         x = self.camencode(x)
         x = x.view(B, N, self.camC, self.D, imH//self.downsample, imW//self.downsample)
         x = x.permute(0, 1, 3, 4, 5, 2)
